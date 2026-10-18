@@ -136,7 +136,7 @@ if 'USER 10001:10001' not in read("Dockerfile"):
 
 # 6. Public-repo hygiene: no secrets, credentials, binaries or large files.
 forbidden_names = re.compile(
-    r"(^|/)(\.env(\..*)?|\.envrc|credentials\.json|tokens\.json|client\.json|id_(rsa|ecdsa|ed25519)\S*)$"
+    r"(^|/)(\.env(\.(?!example$)[^/]*)?|\.envrc|credentials\.json|tokens\.json|client\.json|id_(rsa|ecdsa|ed25519)\S*)$"
     r"|\.(pem|key|p12|pfx|kdbx|keystore|secret|token|log)$|(^|/)agent-fileserver$")
 secret_patterns = re.compile(
     r"-----BEGIN [A-Z ]*PRIVATE KEY-----|ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}"
