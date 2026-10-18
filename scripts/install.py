@@ -144,7 +144,15 @@ def rendered(c):
                  '\n\t\ttrusted_proxies_strict\n\t\tclient_ip_headers X-Forwarded-For')
     caddy = caddy.replace('@AUTO_HTTPS@\n', '\tauto_https off\n' if c['mode'] == 'proxy' else '')
     caddy = caddy.replace('@TRUSTED_PROXIES@\n', trust + '\n' if trust else '')
-    caddy = caddy.replace('@SITE@', c['listen'] if c['mode'] == 'proxy' else c['base_url'][8:])
+    if c['mode'] == 'proxy':
+        # Plain HTTP behind the trusted frontend; any Host. A scheme-less address
+        # would make Caddy serve TLS, and the host part would not limit binding.
+        host, port = c['listen'].rsplit(':', 1)
+        caddy = caddy.replace('@SITE@', f'http://:{port}')
+        caddy = caddy.replace('@BIND@\n', f'\tbind {host.strip("[]")}\n' if host else '')
+    else:
+        caddy = caddy.replace('@SITE@', c['base_url'][8:])
+        caddy = caddy.replace('@BIND@\n', '')
     web = (REPO / 'deploy/agent-fileserver.service.template').read_text()
     web = web.replace('@CAPABILITIES@', 'CAP_NET_BIND_SERVICE' if c['mode'] == 'direct' else '')
     environment = (f'FSERVER_ROOT={DATA}\nFSERVER_BASE_URL={c["base_url"]}\n'

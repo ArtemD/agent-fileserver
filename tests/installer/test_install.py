@@ -78,7 +78,8 @@ class InstallerTests(unittest.TestCase):
     def test_proxy_no_implicit_trust(self):
         files = installer.rendered(self.config('--mode', 'proxy'))
         caddy = files[installer.ETC / 'Caddyfile'][0]
-        self.assertIn(':8000 {', caddy)
+        self.assertIn('http://:8000 {', caddy)
+        self.assertNotIn('\tbind ', caddy)
         self.assertIn('auto_https off', caddy)
         self.assertNotIn('trusted_proxies', caddy)
         web = files[installer.UNITS / installer.WEB_UNIT][0]
@@ -93,6 +94,7 @@ class InstallerTests(unittest.TestCase):
         self.assertIn('trusted_proxies static 127.0.0.1/32 2001:db8::/64', text)
         self.assertIn('trusted_proxies_strict', text)
         self.assertNotIn('private_ranges', text)
+        self.assertIn('http://:8000 {\n\tbind 127.0.0.1\n', text)
 
     def test_bad_origins(self):
         for url in ('http://files.example.com', 'https://x/y', 'https://u:p@x', 'https://x/?x=1',

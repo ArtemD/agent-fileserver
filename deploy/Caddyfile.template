@@ -16,6 +16,7 @@
 }
 
 @SITE@ {
+@BIND@
 	root * /var/lib/agent-fileserver/public
 
 	# All origin requests, without sampling. Keep bearer URLs/IPs private.
