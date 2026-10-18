@@ -5,8 +5,8 @@ agents do. Python stdlib and curl only. The fixture key lives in a private 0600
 header file, never in command arguments, output or exceptions. Each fixture
 deletes only the releases it created and revokes only its own one-day key.
 
-Knobs: FSERVER_TEST_ADMIN (shlex-split owner administration command; defaults
-to /usr/local/bin/agent-fileserver as root, otherwise sudo plus that path).
+Knobs: FSERVER_TEST_ADMIN (shlex-split owner key-administration command;
+defaults to `docker compose run --rm -T admin`, run from the repository root).
 """
 
 import base64
@@ -21,9 +21,7 @@ import subprocess
 import tarfile
 import tempfile
 
-ADMIN = shlex.split(os.environ.get(
-    "FSERVER_TEST_ADMIN", "/usr/local/bin/agent-fileserver"
-    if os.geteuid() == 0 else "sudo /usr/local/bin/agent-fileserver"))
+ADMIN = shlex.split(os.environ.get("FSERVER_TEST_ADMIN", "docker compose run --rm -T admin"))
 KEY = re.compile(r"[A-Za-z0-9_-]{43}\Z")
 TOKEN = re.compile(r"[A-Za-z0-9_-]{22}\Z")
 

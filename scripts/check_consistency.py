@@ -6,6 +6,8 @@ Stdlib only. Each failed check prints one line; exit status 1 if any failed.
 When you add a new invariant to AGENTS.md, add its check here.
 """
 
+import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -49,21 +51,23 @@ for tool in tools:
         fail(f"MCP tool {tool} has no Go test")
 
 # 2. Every runnable test file is documented in docs/TESTING.md (or the container doc).
-testing = read("docs/TESTING.md") + read("tests/installer/CONTAINER.md")
-helpers = {"tests/mcp_fixture.py", "tests/installer/prepare-container.py", "tests/installer/container-init.sh"}
+testing = read("docs/TESTING.md")
+helpers = {"tests/mcp_fixture.py"}
 for path in tracked():
     if path.startswith("tests/") and path.endswith(".py") and path not in helpers:
         if Path(path).name not in testing:
             fail(f"{path} is not mentioned in docs/TESTING.md")
 
 # 3. Removed interfaces stay removed: MCP is the only management interface.
-docs = [p for p in tracked() if p.endswith(".md")] + ["deploy/Caddyfile.template", "scripts/install.py"]
+docs = [p for p in tracked() if p.endswith(".md")] + ["deploy/caddy/routes.caddy", "compose.yaml", ".env.example"]
 for path in docs:
     text = read(path)
-    for gone in ("fpublish", "/_api/v1", "api_acceptance", "docs/API.md", "unittest discover -s client"):
+    for gone in ("fpublish", "/_api/v1", "api_acceptance", "docs/API.md", "unittest discover -s client",
+                 "install.sh", "--validate-only", "agent-fileserver-token", "/usr/local/bin/agent-fileserver",
+                 "tests/installer", "runtime_sandbox", "systemd unit"):
         if gone in text:
             fail(f"{path} still mentions removed interface: {gone}")
-caddy = read("deploy/Caddyfile.template")
+caddy = read("deploy/caddy/routes.caddy")
 management = re.findall(r"@management path (.*)", caddy)
 if management != ["/mcp"]:
     fail(f"Caddy must route only /mcp to the service, found: {management}")
@@ -73,27 +77,62 @@ if "request>headers>X-Auth-Token replace REDACTED" not in caddy:
 # 4. CI runs every automated check, with actions pinned to full commit SHAs.
 workflow = read(".github/workflows/test.yml")
 for command in ("go test -race ./...", "go vet ./...", "gofmt -l", "go mod verify",
-                "python3 scripts/check_consistency.py",
-                "unittest discover -s tests/installer",
-                "--validate-only --base-url", "--validate-only --mode proxy",
-                "py_compile"):
+                "python3 scripts/check_consistency.py", "py_compile", "sh -n scripts/exe-dev-up.sh",
+                "docker compose config -q", "compose.direct.yaml config -q", "caddy validate",
+                "docker compose up -d --build --wait",
+                *("tests/" + Path(p).name for p in tracked()
+                  if p.startswith("tests/") and p.endswith(".py") and p not in helpers)):
     if command not in workflow:
         fail(f"CI workflow does not run: {command}")
 for use in re.findall(r"uses:\s*([^\s#]+)", workflow):
     if not re.fullmatch(r"[\w.-]+/[\w.-]+@[0-9a-f]{40}", use):
         fail(f"CI action is not pinned to a full commit SHA: {use}")
 
-# 5. Documented resource limits match the systemd units.
-architecture = read("docs/ARCHITECTURE.md")
-for unit in ("deploy/agent-fileserver-api.service", "deploy/agent-fileserver.service.template"):
-    for key in ("MemoryHigh", "MemoryMax", "CPUQuota", "TasksMax"):
-        found = re.findall(rf"^{key}=(\S+)$", read(unit), re.M)
-        if len(found) != 1:
-            fail(f"{unit} must set exactly one {key}")
-        elif f"{key}={found[0]}" not in architecture:
-            fail(f"docs/ARCHITECTURE.md does not document {unit} {key}={found[0]}")
-    if not re.search(r"^StartLimitIntervalSec=0$", read(unit), re.M):
-        fail(f"{unit} must keep restarting (StartLimitIntervalSec=0)")
+# 5. Container hardening and pinned images (from compose's own rendered config).
+env = dict(os.environ, FSERVER_DOMAIN="files.example.com")
+rendered = subprocess.run(["docker", "compose", "--profile", "admin", "config", "--format", "json"], cwd=ROOT, env=env,
+                          capture_output=True, text=True)
+if rendered.returncode != 0:
+    fail("docker compose config failed: " + rendered.stderr.strip()[:200])
+else:
+    services = json.loads(rendered.stdout)["services"]
+    for name in ("api", "caddy", "admin"):
+        svc = services.get(name, {})
+        if not svc.get("read_only") or svc.get("cap_drop") != ["ALL"] \
+                or "no-new-privileges:true" not in svc.get("security_opt", []) or svc.get("privileged"):
+            fail(f"compose service {name} must be read-only, drop ALL capabilities, no-new-privileges")
+    for name in ("api", "admin"):
+        if services.get(name, {}).get("network_mode") != "none":
+            fail(f"compose service {name} must have no network (network_mode: none)")
+    if services.get("caddy", {}).get("cap_add") not in (None, ["NET_BIND_SERVICE"]):
+        fail("caddy may add only NET_BIND_SERVICE (needed to exec the official binary)")
+    for name, user in (("api", None), ("caddy", "10002:10002")):
+        if user and services.get(name, {}).get("user") != user:
+            fail(f"compose service {name} must run as {user}")
+    for name in ("api", "caddy"):
+        if services.get(name, {}).get("restart") != "unless-stopped":
+            fail(f"compose service {name} must restart unless-stopped")
+    api_mounts = {m["target"]: m for m in services.get("api", {}).get("volumes", [])}
+    if not api_mounts.get("/var/lib/agent-fileserver/credentials", {}).get("read_only"):
+        fail("the API must mount the key registry read-only")
+    caddy_mounts = {m["target"]: m for m in services.get("caddy", {}).get("volumes", [])}
+    if not caddy_mounts.get("/srv/public", {}).get("read_only") or "/var/lib/agent-fileserver" in caddy_mounts:
+        fail("Caddy must mount only public bytes, read-only")
+    for name, svc in services.items():
+        image = svc.get("image", "")
+        if image and not re.search(r":\d+\.\d+\.\d+(-[a-z0-9.]+)?$", image) and image != "agent-fileserver:local":
+            fail(f"compose service {name} image must be pinned to an exact version: {image}")
+for line in re.findall(r"^FROM\s+(\S+)", read("Dockerfile"), re.M):
+    if not re.search(r":\d+\.\d+\.\d+(-[a-z0-9.]+)?$", line):
+        fail(f"Dockerfile base image must be pinned to an exact version: {line}")
+dockerignore = read(".dockerignore")
+if re.search(r"^\s*!", dockerignore, re.M):
+    fail(".dockerignore must not re-include with '!': Docker would walk the private data/ directory")
+for needed in ("data", "logs", ".env", ".git"):
+    if not re.search(rf"^{re.escape(needed)}$", dockerignore, re.M):
+        fail(f".dockerignore must exclude {needed}")
+if 'USER 10001:10001' not in read("Dockerfile"):
+    fail("Dockerfile must run the service as the dedicated non-root UID 10001")
 
 # 6. Public-repo hygiene: no secrets, credentials, binaries or large files.
 forbidden_names = re.compile(
@@ -124,4 +163,4 @@ for path in ignored:
 if failures:
     print("\n".join("FAIL: " + f for f in failures))
     sys.exit(1)
-print(f"PASS: {len(tools)} MCP tools documented and tested; docs, CI, limits and repo hygiene consistent")
+print(f"PASS: {len(tools)} MCP tools documented and tested; docs, CI, container hardening and repo hygiene consistent")

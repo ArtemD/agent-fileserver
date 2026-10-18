@@ -1,0 +1,11 @@
+# Direct HTTPS: Caddy gets certificates for FSERVER_DOMAIN itself.
+# Point DNS A/AAAA at this host and allow TCP 80/443 (and UDP 443 for HTTP/3).
+#   docker compose -f compose.yaml -f compose.direct.yaml up -d --build
+# Tip: set COMPOSE_FILE=compose.yaml:compose.direct.yaml in .env to make it the default.
+services:
+  caddy:
+    command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile.direct", "--adapter", "caddyfile"]
+    ports: !override
+      - "80:8080"
+      - "443:8443"
+      - "443:8443/udp"

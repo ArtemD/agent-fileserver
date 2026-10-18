@@ -9,7 +9,7 @@ import uuid
 
 BASE = os.environ.get("FSERVER_TEST_BASE", "http://localhost:8000").rstrip("/")
 RESOLVE = os.environ.get("FSERVER_TEST_RESOLVE")
-LOG = os.environ.get("FSERVER_TEST_LOG", "/var/log/agent-fileserver/access.json")
+LOG = os.environ.get("FSERVER_TEST_LOG", "logs/access.json")
 AS_ROOT = [] if os.geteuid() == 0 else ["sudo"]
 tag = "fserver-log-test-" + uuid.uuid4().hex
 

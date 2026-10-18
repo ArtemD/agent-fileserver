@@ -94,6 +94,16 @@ func runManagement(args []string, stdout, stderr io.Writer) error {
 			return err
 		}
 		return s.migratePolicies()
+	case "healthcheck":
+		f := managementFlags("healthcheck", stderr)
+		socket := f.String("socket", "", "required Unix socket path")
+		if err := f.Parse(args[1:]); err != nil {
+			return err
+		}
+		if f.NArg() != 0 || *socket == "" {
+			return fmt.Errorf("usage: agent-fileserver healthcheck --socket PATH")
+		}
+		return healthcheck(*socket)
 	case "serve":
 		f := managementFlags("serve", stderr)
 		socket := f.String("socket", "", "required Unix socket path")
@@ -123,8 +133,31 @@ func runManagement(args []string, stdout, stderr io.Writer) error {
 	return fmt.Errorf("unknown management command")
 }
 
-// Refuse existing paths, including stale sockets: never unlink another service.
-// systemd RuntimeDirectory supplies an owner-writable, otherwise read-only parent.
+// removeStaleSocket deletes a leftover socket from a crashed previous run, so a
+// restarted container recovers. It refuses anything that is not a socket owned
+// by this UID, and any socket that still accepts connections (a live service).
+func removeStaleSocket(abs string) error {
+	st, err := os.Lstat(abs)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	sys, ok := st.Sys().(*syscall.Stat_t)
+	if st.Mode()&os.ModeSocket == 0 || !ok || int(sys.Uid) != os.Getuid() {
+		return fmt.Errorf("socket path exists and is not a stale socket owned by this user")
+	}
+	if c, err := net.DialTimeout("unix", abs, time.Second); err == nil {
+		c.Close()
+		return fmt.Errorf("socket path is in use by a running service")
+	} else if !errors.Is(err, syscall.ECONNREFUSED) {
+		return fmt.Errorf("socket path exists and its state is unknown: %w", err)
+	}
+	return os.Remove(abs)
+}
+
+// The socket parent must be owner-writable only (a private runtime directory).
 func listenManagementSocket(path string) (*net.UnixListener, func(), error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
@@ -137,8 +170,8 @@ func listenManagementSocket(path string) (*net.UnixListener, func(), error) {
 	if err != nil || !parent.IsDir() || parent.Mode().Perm()&0022 != 0 {
 		return nil, nil, fmt.Errorf("socket parent must exist and not be group/world writable")
 	}
-	if _, err = os.Lstat(abs); !errors.Is(err, os.ErrNotExist) {
-		return nil, nil, fmt.Errorf("socket path must not already exist")
+	if err = removeStaleSocket(abs); err != nil {
+		return nil, nil, err
 	}
 	l, err := net.ListenUnix("unix", &net.UnixAddr{Name: abs, Net: "unix"})
 	if err != nil {
@@ -161,6 +194,24 @@ func listenManagementSocket(path string) (*net.UnixListener, func(), error) {
 		return nil, nil, err
 	}
 	return l, cleanup, nil
+}
+
+// healthcheck asks the running service over its private socket; used by the
+// container HEALTHCHECK so the runtime image needs no curl.
+func healthcheck(socket string) error {
+	client := &http.Client{Timeout: 3 * time.Second, Transport: &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "unix", socket)
+		}}}
+	resp, err := client.Get("http://localhost/_internal/health")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unhealthy: HTTP %d", resp.StatusCode)
+	}
+	return nil
 }
 
 func managementHTTPServer(handler http.Handler) *http.Server {

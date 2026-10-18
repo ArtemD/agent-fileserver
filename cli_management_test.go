@@ -280,3 +280,47 @@ func TestManagementShutdownWaitsForInflightRequest(t *testing.T) {
 		t.Fatal("shutdown did not finish")
 	}
 }
+
+func TestManagementStaleSocketRecoveryAndHealthcheck(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "api.sock")
+	// Simulate a crashed previous run: a socket file nobody listens on.
+	stale, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale.SetUnlinkOnClose(false)
+	stale.Close()
+	if _, err = os.Lstat(path); err != nil {
+		t.Fatal("stale socket fixture missing")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- serveManagement(ctx, path, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/_internal/health" {
+				w.WriteHeader(200)
+				return
+			}
+			w.WriteHeader(404)
+		}))
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for healthcheck(path) != nil {
+		if time.Now().After(deadline) {
+			t.Fatal("service did not recover from a stale socket")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	// A live socket must never be replaced by a second instance.
+	if _, _, err = listenManagementSocket(path); err == nil {
+		t.Fatal("replaced a live socket")
+	}
+	cancel()
+	if err = <-done; err != nil {
+		t.Fatal(err)
+	}
+	if healthcheck(filepath.Join(dir, "missing.sock")) == nil {
+		t.Fatal("healthcheck passed without a service")
+	}
+}

@@ -1,0 +1,122 @@
+# Agent Fileserver: Caddy + MCP service. Configure via .env (copy .env.example).
+#   docker compose up -d --build                          # proxy mode (default, e.g. exe.dev)
+#   docker compose -f compose.yaml -f compose.direct.yaml up -d --build   # direct HTTPS
+#   docker compose run --rm admin token create --label NAME --days 0      # owner key admin
+name: agent-fileserver
+
+x-hardened: &hardened
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options: {max-size: "10m", max-file: "5"}
+
+x-service-env: &service-env
+  FSERVER_BASE_URL: https://${FSERVER_DOMAIN:?set FSERVER_DOMAIN in .env}
+  FSERVER_NAMESPACE: ${FSERVER_NAMESPACE:-default}
+
+services:
+  # One-shot: create host directories with the ownership the services expect.
+  init:
+    image: alpine:3.24.2
+    user: "0:0"
+    network_mode: none
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
+    security_opt: ["no-new-privileges:true"]
+    restart: "no"
+    volumes:
+      - ${FSERVER_DATA_DIR:-./data}:/data
+      - ${FSERVER_LOG_DIR:-./logs}:/logs
+      - socket:/socket
+      - caddy-state:/caddy
+    command:
+      - sh
+      - -euc
+      - |
+        install -d -o 10001 -g 10001 -m 0755 /data /data/public
+        install -d -o 10001 -g 10001 -m 0700 /data/credentials
+        install -d -o 10002 -g 10002 -m 0700 /logs /caddy
+        install -d -o 10001 -g 10001 -m 0750 /socket
+
+  # MCP service: no network at all; reachable only through the private socket.
+  api:
+    <<: *hardened
+    build: .
+    image: agent-fileserver:local
+    network_mode: none
+    environment:
+      <<: *service-env
+      # Go GC target (not a container limit): return memory after large uploads.
+      GOMEMLIMIT: 512MiB
+    tmpfs: ["/tmp:size=64m,mode=1777"]
+    volumes:
+      - ${FSERVER_DATA_DIR:-./data}:/var/lib/agent-fileserver
+      # Keys are read-only for the running service; only `admin` can change them.
+      - ${FSERVER_DATA_DIR:-./data}/credentials:/var/lib/agent-fileserver/credentials:ro
+      - socket:/run/agent-fileserver-api
+    depends_on:
+      init: {condition: service_completed_successfully}
+
+  # Public edge: serves release bytes read-only and routes only /mcp to the API.
+  caddy:
+    <<: *hardened
+    image: caddy:2.11.7-alpine
+    user: "10002:10002"
+    group_add: ["10001"]
+    # The official binary carries a file capability; the kernel refuses to exec it
+    # unless that capability is in the bounding set. Ports used are all >1024.
+    cap_add: [NET_BIND_SERVICE]
+    command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile.${FSERVER_MODE:-proxy}", "--adapter", "caddyfile"]
+    environment:
+      FSERVER_DOMAIN: ${FSERVER_DOMAIN:?set FSERVER_DOMAIN in .env}
+      # Docker's bridge gateway: every connection from the host's published port
+      # arrives from it, so it stands in for the trusted HTTPS frontend.
+      FSERVER_TRUSTED_PROXIES: ${FSERVER_TRUSTED_PROXIES:-172.30.53.1/32}
+    ports:
+      - "${FSERVER_LISTEN:-127.0.0.1:8000}:8000"
+    networks: [edge]
+    tmpfs: ["/tmp:size=16m,mode=1777", "/config:size=1m,uid=10002,gid=10002,mode=0700"]
+    volumes:
+      - ./deploy/caddy:/etc/caddy:ro
+      - ${FSERVER_DATA_DIR:-./data}/public:/srv/public:ro
+      - ${FSERVER_LOG_DIR:-./logs}:/var/log/agent-fileserver
+      - socket:/run/agent-fileserver-api
+      - caddy-state:/data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8000/robots.txt"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    depends_on:
+      api: {condition: service_healthy}
+
+  # Owner-only key administration: docker compose run --rm admin token list
+  admin:
+    profiles: [admin]
+    image: agent-fileserver:local
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: "no"
+    environment: *service-env
+    volumes:
+      - ${FSERVER_DATA_DIR:-./data}:/var/lib/agent-fileserver
+    entrypoint: ["agent-fileserver"]
+    command: ["--help"]
+    depends_on:
+      init: {condition: service_completed_successfully}
+
+networks:
+  edge:
+    ipam:
+      config:
+        - subnet: ${FSERVER_EDGE_SUBNET:-172.30.53.0/24}
+
+volumes:
+  socket:
+  caddy-state:

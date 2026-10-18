@@ -34,13 +34,13 @@ No OAuth account database is needed for this single-owner Bearer-key model.
 
 ## Processes and storage
 
-- Caddy serves static bytes and terminates HTTPS, or sits behind an explicitly
-  configured trusted HTTPS proxy. It cannot read private metadata or write
+- Caddy (official `caddy` image) serves static bytes and terminates HTTPS, or
+  sits behind an explicitly configured trusted HTTPS proxy. It cannot read private metadata or write
   published content. A private authorization subrequest gates every release.
-- The Go service runs as a dedicated unprivileged UID on a filesystem Unix
-  socket. No public API TCP port, IP network access, capabilities, owner-home
+- The Go service runs in its own container as a dedicated unprivileged UID on a
+  filesystem Unix socket. No public API TCP port, IP network access, capabilities, owner-home
   access, uploaded code execution, arbitrary URL fetching, or remote shell.
-- Public bytes are under `/var/lib/agent-fileserver/public`. Manifests, access policies,
+- Public bytes are under `data/public` (mounted read-only into Caddy). Manifests, access policies,
   credentials, incoming data, replay state, staging and soft trash are outside
   that directory. The credential directory is read-only inside the service's
   mount namespace; owner-local token administration remains possible.
@@ -88,11 +88,15 @@ and do not use production company login sessions here.
 
 ## Resource and audit boundaries
 
-Both services run under systemd caps so a request flood or memory leak degrades
-one service instead of the host: the API has `MemoryHigh=1280M`/`MemoryMax=1536M`,
-`CPUQuota=150%`, `TasksMax=96`; Caddy has `MemoryHigh=384M`/`MemoryMax=512M`,
-`CPUQuota=150%`, `TasksMax=128`, `LimitNOFILE=16384`. Neither may swap. Crashes
-restart every 5 s indefinitely (`StartLimitIntervalSec=0`) rather than giving up.
+Both services run as Docker Compose containers with dedicated non-root UIDs, a
+read-only root filesystem, all Linux capabilities dropped (Caddy keeps only the
+one its official binary needs to start) and no-new-privileges. The API container
+has **no network** (`network_mode: none`); Caddy reaches it only through a Unix
+socket on a shared volume. The API mounts the key registry read-only; only the
+on-demand `admin` container can change keys. Caddy mounts only `data/public`,
+read-only. Containers restart `unless-stopped` and have health checks; a crashed
+API removes its own stale socket on restart. No container memory/CPU limits are
+set by default; add them in compose if your host needs them.
 
 Default limits: 100 MiB archive wire/decoded input, 100 MiB extracted originals,
 5,000 filesystem objects including implicit directories, bounded depth and path

@@ -12,6 +12,7 @@ coverage.*
 
 # Runtime state, release data and logs
 /data/
+/logs/
 /run/
 /test-results/
 *.log
@@ -20,6 +21,7 @@ coverage.*
 # Secrets and credentials
 .env
 .env.*
+!.env.example
 .envrc
 *.pem
 *.key

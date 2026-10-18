@@ -1,0 +1,21 @@
+# Direct mode: Caddy obtains and renews certificates for FSERVER_DOMAIN itself.
+# Unprivileged ports inside the container; compose.direct.yaml maps 80/443.
+# No forwarded headers are trusted.
+{
+	admin off
+	persist_config off
+	storage file_system /data/caddy
+	http_port 8080
+	https_port 8443
+	servers {
+		timeouts {
+			read_header 10s
+			idle 2m
+		}
+		max_header_size 32KB
+	}
+}
+
+{$FSERVER_DOMAIN} {
+	import routes.caddy
+}

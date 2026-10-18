@@ -101,11 +101,11 @@ One MCP POST is admitted before parsing; batches are rejected. Structural
 budgets cover the entire JSON-RPC envelope: depth 64, every array 5,000 items,
 50,000 structural items. File count/path/expansion budgets also apply.
 
-Large JSON is not streaming binary. Keep the provided 1536 MiB worker ceiling
-and 512 MiB Go soft limit; allow at least 2 GiB host RAM for this workload.
-Standalone and isolated-cgroup tests accepted a real 100 MiB decoded tar;
-observed worker peaks were approximately 625–732 MiB. These are measurements,
-not universal upper bounds or real-client compatibility claims.
+Large JSON is not streaming binary: the service briefly holds several copies of
+an upload (about 10× the file size at peak, e.g. ~120 MB for 10 MiB). The
+compose file sets a 512 MiB Go GC target (`GOMEMLIMIT`). A real 100 MiB decoded
+tar is accepted end to end in CI, but realistic MCP clients send far less,
+because the model must emit the base64 itself.
 
 For Claude/Cowork or another host:
 

@@ -1,0 +1,22 @@
+# Proxy mode: a trusted HTTPS frontend (for example the exe.dev proxy) terminates
+# TLS and forwards plain HTTP here. Only that frontend's address is trusted for
+# X-Forwarded-For (FSERVER_TRUSTED_PROXIES, set by compose.yaml).
+{
+	admin off
+	persist_config off
+	storage file_system /data/caddy
+	servers {
+		trusted_proxies static {$FSERVER_TRUSTED_PROXIES}
+		trusted_proxies_strict
+		client_ip_headers X-Forwarded-For
+		timeouts {
+			read_header 10s
+			idle 2m
+		}
+		max_header_size 32KB
+	}
+}
+
+http://:8000 {
+	import routes.caddy
+}

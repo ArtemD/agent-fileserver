@@ -1,17 +1,20 @@
+# Keep the build context to the Go module. Plain excludes only: a "!" re-include
+# would make Docker walk excluded directories, and data/ is private to UID 10001.
 .git
+.github
 .env
 .env.*
-bin/*
-!bin/agent-fileserver
-!bin/caddy
 data
-run
-rendered
-test-results
-**/__pycache__
-*.log
-*.pem
-*.key
-credentials.json
-tokens.json
-*-private-setup.*
+logs
+deploy
+docs
+scripts
+tests
+*.md
+*_test.go
+compose*.yaml
+Dockerfile
+.dockerignore
+.gitignore
+LICENSE
+agent-fileserver

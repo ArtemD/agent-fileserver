@@ -1,148 +1,148 @@
-# Installation and operations
+# Installation and operations (Docker)
 
-Read README and [security model](ARCHITECTURE.md) first. This is a native
-single-owner Ubuntu 24.04+/Debian 12+ systemd installation, not an arbitrary
-host-reconfiguration agent or shared multi-tenant security boundary.
+Docker Compose is the only supported installation. Read the README and the
+[security model](ARCHITECTURE.md) first. One installation belongs to one owner.
 
-## Preconditions and no-write preview
+## Requirements
 
-Have administrative access and a reviewed checkout. Install prerequisites:
+- Docker Engine with the Compose v2 plugin (`docker compose version`).
+- Either a domain whose A/AAAA records point at the host with TCP 80/443 (and
+  UDP 443) open (**direct** mode), or an existing trusted HTTPS frontend that
+  forwards plain HTTP to the host (**proxy** mode: exe.dev, Cloudflare Tunnel, nginx…).
 
-```sh
-sudo apt-get update
-sudo apt-get install -y ca-certificates curl git python3 systemd passwd util-linux brotli
-```
-
-Go (module minimum 1.26) and Caddy must exist or be obtained with
-`--download-deps`. Downloads are pinned official Go/Caddy artifacts with verified
-SHA-256/SHA-512 checksums; Go module checksums remain enabled. The installer
-never silently runs apt or changes SSH, DNS, firewall, other services or ACME
-accounts. It does not use `curl | sh`.
+## Configure
 
 ```sh
-./install.sh --render-only --base-url https://files.example.com
-./install.sh --check-host --base-url https://files.example.com
-./install.sh --validate-only --base-url https://files.example.com --download-deps
+git clone https://github.com/ArtemD/agent-fileserver.git
+cd agent-fileserver
+cp .env.example .env    # then edit
 ```
 
-Rendering needs no root/dependencies/downloads and writes only a new/empty output
-directory. `--output-dir ./rendered` preserves an explicit review directory.
-Validation may download/build dependencies and provision **temporary** Caddy
-logs/storage; it does not install services or touch installed data/logs.
-Host preflight refuses conflicts, symlinks and unmanaged existing paths/accounts.
-It runs before downloads and is repeated immediately before changes.
-
-For downloaded/build executables, temporary storage must allow execution; set
-`TMPDIR` to a private executable workspace if `/tmp` is mounted `noexec`.
-
-## Direct public HTTPS
-
-Configure real public A/AAAA records. TCP 80/443 must reach this server; don't
-leave an incorrect AAAA record pointing elsewhere. Verify there is no existing
-listener or installation you need to preserve.
-
-```sh
-sudo ./install.sh --base-url https://files.example.com --download-deps
-```
-
-Caddy handles HTTPS issuance/renewal. Validation alone does not prove DNS,
-firewall, ACME issuance, routing or your real client. The installer refuses
-port conflicts; it does not stop an existing nginx/Caddy instance for you.
-Create an owner-private named agent key as in README; none exists by default.
-
-## Behind an existing HTTPS frontend
-
-The frontend must terminate valid HTTPS and forward to the private origin
-listener. Bind loopback if it runs on the same host:
-
-```sh
-sudo ./install.sh --mode proxy --base-url https://files.example.com \
-  --listen 127.0.0.1:8000 --trusted-proxy 127.0.0.1/32 --download-deps
-```
-
-For an external/platform frontend, select its actual listener/reachability and
-**explicit exact** source IPs/CIDRs, repeating `--trusted-proxy` as needed.
-Nothing is inferred; `/0` trust is forbidden. Trusting all clients or fabricated
-forwarding headers defeats client-IP integrity. Restrict direct access to the
-origin at the network boundary when appropriate. MCP requires the same key header in every mode
-(`Authorization: Bearer` or `X-Auth-Token`). Upstream body/time limits must
-accommodate MCP's base64 overhead, not merely a 100 MiB binary body.
-
-Example: on an exe.dev VM the platform proxy terminates TLS and connects from
-`127.0.0.1`, appending the real client to `X-Forwarded-For`. Use
-`--listen 127.0.0.1:8000 --trusted-proxy 127.0.0.1/32`, set the VM's proxied port
-to 8000 and make it public. Inside the VM the hostname may resolve to an internal
-address; test the public edge with `curl --resolve HOST:443:PUBLIC_IP`.
-
-## Managed layout
-
-| Path/account | Purpose |
+| Variable | Meaning |
 |---|---|
-| `/etc/agent-fileserver/` | Root-owned environment, Caddyfile, installer inventory |
-| `/var/lib/agent-fileserver/public/` | Immutable public bytes; Caddy read-only |
-| Other children of `/var/lib/agent-fileserver/` | Private policies/manifests/incoming/replay/credentials/staging/trash |
-| `/var/lib/agent-fileserver-caddy/` | Private Caddy state/certificates |
-| `/var/log/agent-fileserver/access.json` | Private `0600` rotated access log |
-| `/usr/local/libexec/agent-fileserver` | API/publisher executable |
-| `/usr/local/libexec/agent-fileserver-caddy` | Managed Caddy copy |
-| `/usr/local/bin/agent-fileserver{,-token}` | Root-owned local administrative wrappers |
-| `/run/agent-fileserver-api/http.sock` | Group-restricted private Unix socket |
-| `afs-api`, `afs-caddy` | Separate non-login, no-sudo service accounts |
+| `FSERVER_DOMAIN` | Public hostname (no scheme). Release URLs are `https://FSERVER_DOMAIN/…` |
+| `FSERVER_MODE` | `proxy` (default) or `direct` |
+| `FSERVER_LISTEN` | Proxy mode host address, default `127.0.0.1:8000` |
+| `FSERVER_DATA_DIR` | Host directory for releases, policies and key hashes (`./data`) |
+| `FSERVER_LOG_DIR` | Host directory for the access log (`./logs`) |
+| `FSERVER_NAMESPACE` | Optional label shown by `server_info` |
+| `FSERVER_EDGE_SUBNET`, `FSERVER_TRUSTED_PROXIES` | Only if `172.30.53.0/24` clashes on this host; keep in sync |
+| `COMPOSE_FILE` | Set to `compose.yaml:compose.direct.yaml` to make direct mode the default |
 
-API runs without IP networking/capabilities/home access. Credential directory
-is read-only in its mount namespace but local administration can rotate keys.
-Caddy cannot write public bytes or access private metadata. Do not give these
-accounts shell/sudo access or loosen home/credential permissions.
+`.env` holds configuration only and is git-ignored. **Agent keys never go in
+`.env`**: the server stores only SHA-256 hashes in the data directory.
 
-Enabled units: `agent-fileserver-api.service`, `agent-fileserver.service`,
-`agent-fileserver-healthcheck.timer`. The bounded timer probes active services
-only and uses `try-restart`; intentionally stopped units stay stopped.
-`--no-healthcheck` disables the timer on a fresh install. Health does not prove
-public certificates, DNS, network reachability or correct website behavior.
-Each unit has memory/CPU/process caps and restarts indefinitely with a 5 s delay
-(see [architecture](ARCHITECTURE.md#resource-and-audit-boundaries)). Large MCP input needs RAM headroom: retain 1536 MiB API cgroup maximum and
-512 MiB Go soft limit, and allow at least 2 GiB host RAM for that workload.
+## Start
+
+**Proxy mode** (default):
+
+```sh
+docker compose up -d --build --wait
+```
+
+Caddy listens on `FSERVER_LISTEN` with plain HTTP. Every connection to that port
+arrives from Docker's bridge gateway and is trusted for `X-Forwarded-For`, so
+**only the trusted frontend may reach it** — keep it on `127.0.0.1` when the
+frontend runs on the same host, or firewall it to the frontend's address.
+
+**Direct mode** (Caddy obtains and renews certificates itself):
+
+```sh
+docker compose -f compose.yaml -f compose.direct.yaml up -d --build --wait
+```
+
+## exe.dev
+
+On a fresh VM from the default `exeuntu` image (Docker preinstalled):
+
+```sh
+ssh exe.dev new --name files
+ssh files.exe.xyz 'git clone https://github.com/ArtemD/agent-fileserver.git && agent-fileserver/scripts/exe-dev-up.sh'
+ssh exe.dev share port files 8000
+ssh exe.dev share set-public files
+```
+
+`scripts/exe-dev-up.sh` enables `docker.service` at boot (exeuntu otherwise only
+socket-activates Docker, so containers would not come back after a reboot),
+writes `.env` for `https://VMNAME.exe.xyz` from exe.dev's reflection metadata,
+and starts the stack. It is safe to re-run after `git pull`. The exe.dev proxy
+terminates TLS and connects from the VM's loopback, which is proxy mode's default.
+Inside the VM the hostname may resolve to an internal address; test the public
+edge with `curl --resolve files.exe.xyz:443:PUBLIC_IP`. The README's **Deploy on
+exe.dev** button does the same through exe.dev's agent, guided by AGENTS.md.
+
+## Agent keys
+
+```sh
+umask 077; mkdir -p ~/.config/agent-fileserver
+docker compose run --rm -T admin token create --label claude --days 0 > ~/.config/agent-fileserver/claude.key
+docker compose run --rm -T admin token list
+docker compose run --rm -T admin token revoke claude
+```
+
+Revocation is effective on the next request; no restart. The running API mounts
+the key registry read-only, so a compromised service cannot mint keys.
+
+## Layout
+
+| Item | Purpose |
+|---|---|
+| `api` container (`agent-fileserver:local`, UID 10001) | MCP service; **no network**, private Unix socket only |
+| `caddy` container (`caddy:2.11.7-alpine`, UID 10002) | Public edge; serves `data/public` read-only, routes only `/mcp` |
+| `admin` (profile, on demand) | Key administration; no network |
+| `init` (one-shot) | Creates host directories with the right owners, then exits |
+| `data/public/` | Immutable public release bytes |
+| `data/{policies,manifests,credentials,staging,incoming,trash,api-state}/` | Private state (`0700`, UID 10001) |
+| `logs/access.json` | Private rotated JSON access log (`0600`, UID 10002; read with `sudo`) |
+| Volumes `socket`, `caddy-state` | API socket; Caddy certificates/state |
+
+All long-running containers have a read-only root filesystem, drop all Linux
+capabilities (Caddy keeps only the one its official binary needs to start), set
+no-new-privileges, restart `unless-stopped` and have health checks. Docker logs
+rotate at 10 MB × 5 per container.
+
+## Logs and status
+
+```sh
+docker compose ps                         # health of api and caddy
+docker compose logs -f api                # MCP operations audit (never secrets)
+sudo tail -F logs/access.json             # every request, keys redacted
+```
 
 ## Upgrades
 
-Back up privately, review/test the revision, then:
-
 ```sh
-sudo ./install.sh --upgrade --download-deps
+git pull                                  # review the new revision first
+docker compose up -d --build --wait
 ```
 
-The inventory records managed file hashes, config identity and numeric service
-UID/GIDs. Upgrade refuses unmanaged/edited files or changed identities/config,
-preserves credentials/policies/releases/logs, and never recursively re-owns data.
-It stops units during replacement and restores prior managed files on activation
-failure. This is not an arbitrary schema migrator or a full host rollback.
-Initial-install partial failures retain state for inspection; do not erase
-directories to bypass the refusal. Review/recover explicitly.
+Data, keys and passwords live in the data directory and survive rebuilds.
 
-Do not manually edit managed files and expect an automatic overwrite; upgrades
-deliberately refuse that. Review configuration changes separately, retain a
-private copy, validate and plan the inventory update under operator control.
-Keep OS/dependency security updates and test after maintenance.
+## Backups and restore
 
-## Backups, migration and recovery
+The data directory is the whole state. For a consistent copy, stop publishing
+briefly:
 
-Quiesce publishing/password changes for consistent backups. Back up private
-configuration, data **including policies and credential registry**, and relevant
-Caddy state to owner-only encrypted storage. Never publish backups/logs or
-upload them to this Git repository. Test restores on an isolated instance.
+```sh
+docker compose stop api
+sudo tar -C . -czf ../agent-fileserver-backup.tgz data
+docker compose start api
+```
 
-Existing releases need valid policies before use. Missing/malformed policies
-deny access. There is no automatic “make everything public” migration.
-Local `migrate-policies` is an explicit operator-only
-decision for a reviewed legacy public store, not a routine install step.
+Keep backups private (they contain key hashes and policies); never commit them.
+Restore by extracting `data/` back in place before `docker compose up`. Missing
+or malformed policies deny access by design: **never** restore releases without
+their policies, and never serve the public directory with a different web server
+that skips the policy check, or protected releases would become public.
 
-**Never restore an old ungated static-server config over protected releases.**
-It would expose their bytes. On failure, stop serving or retain policy gating;
-do not remove authorization as a shortcut. To move a full installation, preserve
-private state and permissions deliberately; to create another person's instance,
-install fresh and generate independent keys instead of cloning credentials.
+To move an existing installation, copy the data directory with ownership
+preserved (`sudo rsync -a`) or re-own it to UID 10001 afterwards. To set up
+another person, install fresh and create independent keys instead of copying.
 
-No destructive uninstall command is included. Stop/disable only this project's
-units and review backup/data retention before explicitly removing owned paths.
-No routine agent operation needs SSH or operating-system access. Agents use MCP
-only; the owner uses SSH only for key administration and upgrades.
+## Remove
+
+```sh
+docker compose down            # stops and removes containers; data/ and logs/ stay
+```
+
+Delete `data/` and `logs/` yourself only after reviewing what you want to keep.

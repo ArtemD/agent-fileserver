@@ -15,7 +15,7 @@ concurrency:
 jobs:
   unit:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 20
     strategy:
       matrix:
         go: ['1.26.x', '1.27.x']
@@ -27,46 +27,53 @@ jobs:
         with:
           go-version: ${{ matrix.go }}
           cache: true
+      - name: Consistency and public-repo hygiene (docs, tests, CI, secrets)
+        run: python3 scripts/check_consistency.py
       - name: Native prerequisites
         run: sudo apt-get update && sudo apt-get install -y brotli
-      - name: Consistency and public-repo hygiene (docs, tests, CI, limits, secrets)
-        run: python3 scripts/check_consistency.py
       - name: Go race tests, vet, format and module verification
         run: |
           go test -race ./...
           go vet ./...
           test -z "$(gofmt -l -- *.go)"
           go mod verify
-      - name: Installer tests and installed-test syntax
+      - name: Script syntax
+        run: |
+          PYTHONPYCACHEPREFIX="$(mktemp -d)" python3 -m py_compile scripts/*.py tests/*.py
+          sh -n scripts/exe-dev-up.sh
+      - name: Validate compose files and Caddy configs (proxy and direct)
         env:
-          PYTHONDONTWRITEBYTECODE: '1'
+          FSERVER_DOMAIN: files.example.com
         run: |
-          python3 -B -m unittest discover -s tests/installer -p 'test_*.py' -v
-          PYTHONPYCACHEPREFIX="$(mktemp -d)" python3 -m py_compile scripts/*.py tests/*.py tests/installer/*.py
-      - name: Validate direct and proxy configurations without installing
-        run: |
-          ./install.sh --validate-only --base-url https://files.example.com --download-deps
-          ./install.sh --validate-only --mode proxy --base-url https://files.example.com --download-deps
+          docker compose config -q
+          docker compose -f compose.yaml -f compose.direct.yaml config -q
+          for mode in proxy direct; do
+            docker run --rm -v "$PWD/deploy/caddy:/etc/caddy:ro" --tmpfs /var/log/agent-fileserver \
+              -e FSERVER_DOMAIN -e FSERVER_TRUSTED_PROXIES=172.30.53.1/32 caddy:2.11.7-alpine \
+              caddy validate --config "/etc/caddy/Caddyfile.$mode" --adapter caddyfile
+          done
 
-  fresh-install:
-    if: github.event_name == 'workflow_dispatch'
+  integration:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
-      - name: Disposable systemd host (no host mounts or published ports)
+      - name: Start the real compose stack (proxy mode)
         run: |
-          docker build -f tests/installer/Dockerfile -t afs-installer-test .
-          docker run -d --name afs-installer-test --privileged --cgroupns=private \
-            --tmpfs /run --tmpfs /run/lock --tmpfs /tmp \
-            --tmpfs /sys/fs/cgroup:rw afs-installer-test
-          for attempt in $(seq 1 30); do
-            docker exec afs-installer-test systemctl is-system-running --wait && break
-            test "$attempt" -lt 30 || docker exec afs-installer-test systemctl --failed
-          done
-          docker exec afs-installer-test python3 tests/installer/container-smoke.py
-      - name: Stop only this disposable fixture
+          sed 's/^FSERVER_DOMAIN=.*/FSERVER_DOMAIN=files.example.com/' .env.example > .env
+          docker compose up -d --build --wait
+      - name: Container isolation
+        run: python3 -B tests/container_sandbox.py
+      - name: Static serving, MCP and access logs through Caddy
+        run: |
+          python3 -B tests/http_acceptance.py
+          FSERVER_TEST_LARGE=1 python3 -B tests/mcp_live.py
+          python3 -B tests/access_logging.py
+      - name: Service logs on failure
+        if: failure()
+        run: docker compose logs --no-color
+      - name: Remove only this disposable stack
         if: always()
-        run: docker rm -f afs-installer-test || true
+        run: docker compose down --volumes --remove-orphans

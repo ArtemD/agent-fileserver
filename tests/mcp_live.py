@@ -4,8 +4,8 @@
 Run: python3 tests/mcp_live.py
 Knobs: FSERVER_TEST_BASE (default http://localhost:8000),
 FSERVER_TEST_RESOLVE (curl --resolve, with normal TLS verification), and
-FSERVER_TEST_ADMIN (shlex-split local administration command; defaults to
-/usr/local/bin/agent-fileserver as root, otherwise sudo plus that path).
+FSERVER_TEST_ADMIN (shlex-split owner key-administration command; defaults to
+`docker compose run --rm -T admin`, run from the repository root).
 
 Creates its own one-day fixture credentials and synthetic releases, then deletes
 only those releases and revokes only those credentials. Never reads the registry.
@@ -36,9 +36,7 @@ import zlib
 
 BASE = os.environ.get("FSERVER_TEST_BASE", "http://localhost:8000").rstrip("/")
 RESOLVE = os.environ.get("FSERVER_TEST_RESOLVE")
-CLI = shlex.split(os.environ.get(
-    "FSERVER_TEST_ADMIN", "/usr/local/bin/agent-fileserver"
-    if os.geteuid() == 0 else "sudo /usr/local/bin/agent-fileserver"))
+CLI = shlex.split(os.environ.get("FSERVER_TEST_ADMIN", "docker compose run --rm -T admin"))
 TOKEN = re.compile(r"[A-Za-z0-9_-]{22}\Z")
 KEY = re.compile(r"[A-Za-z0-9_-]{43}\Z")
 HTML = b"<!doctype html><title>MCP fixture</title><h1>Published through MCP</h1>"

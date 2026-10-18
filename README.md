@@ -7,11 +7,13 @@ own server over **remote MCP**, and get back a fresh, unguessable URL to share.
 - Publish a few files or **one ZIP/tar.gz for a whole website**.
 - Fresh unlisted URL per immutable release; optional visitor password.
 - List, inspect, download (≤ 1 MiB), delete, and set/reset/remove passwords.
-- Caddy serves bytes; a sandboxed Go service handles MCP on a private Unix socket.
+- Docker Compose: Caddy serves bytes; a sandboxed Go service (no network) handles MCP on a private Unix socket.
 - No database, analytics, uploaded code execution or directory listing.
 - MIT licensed. One installation per owner; give other people their own instance.
 
-**Supported target:** Ubuntu 24.04+ / Debian 12+ with systemd, amd64 or arm64.
+**Runs anywhere with Docker Compose** (amd64 or arm64).
+
+[![Deploy on exe.dev](https://raw.githubusercontent.com/boldsoftware/exe.dev/main/assets/buttons/deploy-on-exe-dev.png)](https://exe.dev/new?repo=https://github.com/ArtemD/agent-fileserver)
 
 ```text
 Agent (Claude, …) ──MCP + key──▶ Caddy ──/mcp──▶ Go service ──▶ publisher ──▶ releases
@@ -20,33 +22,28 @@ Visitors ───────────────GET────▶ Caddy �
 
 ## 1. Install
 
-You need a domain pointing at the server (direct mode), or an existing trusted
-HTTPS frontend (proxy mode). Review the revision you install.
+You need Docker with Compose v2, plus either a domain pointing at the host
+(direct mode) or a trusted HTTPS frontend in front of it (proxy mode).
 
 ```sh
-sudo apt-get update
-sudo apt-get install -y ca-certificates curl git python3 systemd passwd util-linux brotli
 git clone https://github.com/ArtemD/agent-fileserver.git
 cd agent-fileserver
+cp .env.example .env          # set FSERVER_DOMAIN (and FSERVER_MODE)
+docker compose up -d --build --wait                                   # proxy mode
+docker compose -f compose.yaml -f compose.direct.yaml up -d --build --wait   # or direct HTTPS
 ```
 
-**Direct HTTPS** (Caddy gets certificates; TCP 80/443 must reach the server):
+**On exe.dev**, one command on a fresh VM does it all (Docker at boot, `.env`
+for `https://VMNAME.exe.xyz`, start):
 
 ```sh
-sudo ./install.sh --base-url https://files.example.com --download-deps
+ssh exe.dev new --name files
+ssh files.exe.xyz 'git clone https://github.com/ArtemD/agent-fileserver.git && agent-fileserver/scripts/exe-dev-up.sh'
+ssh exe.dev share port files 8000 && ssh exe.dev share set-public files
 ```
 
-**Behind an HTTPS proxy on the same host** (for example an exe.dev VM, whose
-proxy connects from `127.0.0.1` and terminates TLS):
-
-```sh
-sudo ./install.sh --mode proxy --base-url https://files.example.com \
-  --listen 127.0.0.1:8000 --trusted-proxy 127.0.0.1/32 --download-deps
-```
-
-Preview without changing anything: add `--render-only` or `--validate-only`.
-The installer refuses to overwrite existing installs and never touches DNS or
-firewalls. Details: [installation and operations](docs/INSTALL.md).
+Releases, policies and key hashes live in `./data`; the access log in `./logs`.
+Details, backups and upgrades: [installation and operations](docs/INSTALL.md).
 
 ## 2. Create an agent key
 
@@ -55,16 +52,16 @@ or person so you can revoke them individually. Each key manages **all** releases
 on this instance.
 
 ```sh
-umask 077
-mkdir -p ~/.config/agent-fileserver
-sudo agent-fileserver-token create --label claude --days 0 \
+umask 077; mkdir -p ~/.config/agent-fileserver
+docker compose run --rm -T admin token create --label claude --days 0 \
   > ~/.config/agent-fileserver/claude.key
 ```
 
 The key is printed once, straight into that private file; the server stores
-only its hash. `--days 0` means no expiry (use `--days 90` for one). Read it
-when you configure a client, from your own terminal: `cat ~/.config/agent-fileserver/claude.key`.
-Never put it in Git, chat, skills, prompts, URLs or tool arguments.
+only its hash (never in `.env`). `--days 0` means no expiry (use `--days 90` for
+one). Read it when you configure a client, from your own terminal:
+`cat ~/.config/agent-fileserver/claude.key`. Never put it in Git, chat, skills,
+prompts, URLs or tool arguments.
 
 ## 3. Connect and authenticate
 
@@ -112,8 +109,8 @@ Clients that only support OAuth, legacy SSE or local stdio servers can't connect
 ### Rotate or revoke
 
 ```sh
-sudo agent-fileserver-token list            # labels, status, expiry; never secrets
-sudo agent-fileserver-token revoke claude   # effective on the next request, no restart
+docker compose run --rm -T admin token list            # labels, status, expiry; never secrets
+docker compose run --rm -T admin token revoke claude   # effective on the next request, no restart
 ```
 
 To rotate, create a new label, update the client, then revoke the old one.
@@ -153,19 +150,19 @@ More: [MCP reference](docs/MCP.md).
 - All releases on one hostname share a browser origin: only publish JavaScript
   you trust, and never reuse company production login cookies here.
 - Deletion is permanent at the origin; it can't recall downloads or caches.
-- Services run under systemd memory/CPU/process caps so a flood or leak can't
-  take the host down. See [architecture/security](docs/ARCHITECTURE.md) and [SECURITY.md](SECURITY.md).
+- Containers run as non-root with read-only filesystems and no capabilities;
+  the MCP service has no network at all and cannot change keys. See [architecture/security](docs/ARCHITECTURE.md) and [SECURITY.md](SECURITY.md).
 
 ## Operate
 
 ```sh
-systemctl status agent-fileserver agent-fileserver-api
-sudo journalctl -u agent-fileserver-api --since today   # MCP operations audit
-sudo tail -F /var/log/agent-fileserver/access.json      # every request, secrets redacted
-git pull && sudo ./install.sh --upgrade --download-deps  # after reviewing the new revision
+docker compose ps                          # health of api and caddy
+docker compose logs -f api                 # MCP operations audit (never secrets)
+sudo tail -F logs/access.json              # every request, keys redacted
+git pull && docker compose up -d --build --wait   # upgrade, after reviewing the new revision
 ```
 
-Upgrades keep keys, passwords and releases, and refuse hand-edited managed files.
+Upgrades keep keys, passwords and releases (they live in `./data`).
 
 ## Contributing
 
