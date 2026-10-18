@@ -395,7 +395,8 @@ func TestMCPArrayCardinalityBoundBeforeAllocation(t *testing.T) {
 	for _, element := range []string{"{}", "null"} {
 		raw := json.RawMessage(`{"files":[` + strings.Repeat(element+",", mcpMaxFiles) + element + `]}`)
 		var args mcpPublishArgs
-		if err := mcpDecode(raw, &args); !errors.Is(err, errMCPArrayLimit) || args.Files != nil {
+		err := mcpDecode(raw, &args)
+		if err == nil || element == "{}" && !errors.Is(err, errMCPArrayLimit) || args.Files != nil {
 			t.Fatalf("cardinality bound must precede Unmarshal (%s): %v", element, err)
 		}
 	}
@@ -413,6 +414,47 @@ func TestMCPArrayCardinalityBoundBeforeAllocation(t *testing.T) {
 	}
 	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > 16<<20 {
 		t.Fatalf("excess allocation before array rejection: %d", allocated)
+	}
+}
+
+func TestMCPRejectsExplicitNullBeforePublicActivation(t *testing.T) {
+	f := testAPI(t)
+	archive := base64.StdEncoding.EncodeToString(fixtureTar(t, tarFixture{"hello.txt", 0, "fixture", nil}))
+	for _, name := range []string{"publish_files", "publish_archive"} {
+		for _, field := range []string{"password", "label", "spa"} {
+			t.Run(name+"/"+field, func(t *testing.T) {
+				args := map[string]any{"idempotency_key": requestID(), field: nil}
+				if name == "publish_files" {
+					args["files"] = []map[string]any{{"path": "hello.txt", "text": "fixture"}}
+				} else {
+					args["archive_base64"] = archive
+				}
+				mcpTool(t, f, name, args, true)
+				active, err := f.a.s.list()
+				if err != nil || len(active) != 0 {
+					t.Fatal("invalid nullable argument activated a release")
+				}
+			})
+		}
+	}
+	for _, file := range []map[string]any{
+		{"path": nil, "text": "fixture"},
+		{"path": "hello.txt", "text": nil, "content_base64": "Zml4dHVyZQ=="},
+		{"path": "hello.txt", "text": "fixture", "content_base64": nil},
+	} {
+		mcpTool(t, f, "publish_files", map[string]any{
+			"idempotency_key": requestID(), "files": []map[string]any{file},
+		}, true)
+	}
+	active, err := f.a.s.list()
+	if err != nil || len(active) != 0 {
+		t.Fatal("invalid nullable file content activated a release")
+	}
+	// Omitting a password is still the explicitly documented public mode.
+	v := mcpPublishFile(t, f, map[string]any{"idempotency_key": requestID(),
+		"files": []map[string]any{{"path": "hello.txt", "text": "fixture"}}})
+	if v.Protected {
+		t.Fatal("omitted password no longer publishes in documented public mode")
 	}
 }
 

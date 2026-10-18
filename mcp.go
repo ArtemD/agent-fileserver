@@ -253,7 +253,9 @@ func mcpDecode(raw json.RawMessage, out any) error {
 
 // mcpCheckFields sees syntactically valid JSON only. It checks object keys
 // against the destination type, rejects duplicates/case-fold aliases and skips
-// string payloads in place. JSON syntax and scalar typing stay with encoding/json.
+// string payloads in place. Every current tool schema is nonnullable, including
+// optional pointer fields (pointers distinguish omission, not explicit null).
+// Other JSON syntax and scalar typing stay with encoding/json.
 func mcpCheckFields(data []byte, typ reflect.Type) error {
 	i := 0
 	bad := errors.New("invalid tool fields")
@@ -287,6 +289,11 @@ func mcpCheckFields(data []byte, typ reflect.Type) error {
 			t = t.Elem()
 		}
 		switch data[i] {
+		case 'n':
+			// encoding/json silently turns null strings/bools into zero values
+			// and null optional strings into nil. In particular password:null
+			// must not become an omitted password and publish publicly.
+			return bad
 		case '{':
 			if t.Kind() != reflect.Struct {
 				return bad
