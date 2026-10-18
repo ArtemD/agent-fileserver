@@ -17,9 +17,10 @@ sudo docker rm --force afs-installer-test
 ```
 
 There are **no host data/home/socket mounts, no host-cgroup RW bind and no
-published host ports**. Privilege belongs only to the disposable container;
-it is needed to exercise the real namespace, read-only mount, and capability
-settings. The entrypoint mounts cgroup2 inside a private cgroup namespace;
+published host ports**. Use only trusted test code on a disposable test host
+or runner: `--privileged` is **not a host-isolation security boundary**, even
+without those mounts. It is needed here to exercise the real service namespace,
+read-only mount, and capability settings. The entrypoint mounts cgroup2 inside a private cgroup namespace;
 if this is forbidden by the host runtime, report the integration as blocked,
 not passing. Do not weaken the production service sandbox to pass a container
 test. Do not run `container-smoke.py` on an actual installation.
