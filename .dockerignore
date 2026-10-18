@@ -1,0 +1,17 @@
+.git
+.env
+.env.*
+bin/*
+!bin/agent-fileserver
+!bin/caddy
+data
+run
+rendered
+test-results
+**/__pycache__
+*.log
+*.pem
+*.key
+credentials.json
+tokens.json
+*-private-setup.*

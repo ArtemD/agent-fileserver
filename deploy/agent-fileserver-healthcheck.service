@@ -1,0 +1,29 @@
+[Unit]
+Description=Probe active artifact publisher services without reviving stopped units
+After=agent-fileserver-api.service agent-fileserver.service
+
+[Service]
+Type=oneshot
+User=root
+SupplementaryGroups=afs-caddy
+EnvironmentFile=/etc/agent-fileserver/environment
+ExecStart=/usr/local/libexec/agent-fileserver-healthcheck
+TimeoutStartSec=60s
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectKernelLogs=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+UMask=0077

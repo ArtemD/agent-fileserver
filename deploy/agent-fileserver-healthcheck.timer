@@ -1,0 +1,11 @@
+[Unit]
+Description=Periodic bounded health checks for artifact publisher
+
+[Timer]
+OnBootSec=60s
+OnUnitActiveSec=60s
+AccuracySec=10s
+Unit=agent-fileserver-healthcheck.service
+
+[Install]
+WantedBy=timers.target

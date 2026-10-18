@@ -1,0 +1,17 @@
+/bin/
+/data/
+/run/
+/.env
+/.env.*
+*.log
+__pycache__/
+*.py[cod]
+/test-results/
+/rendered/
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.json
+tokens.json
+*-private-setup.*

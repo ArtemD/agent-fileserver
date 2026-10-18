@@ -1,0 +1,64 @@
+[Unit]
+Description=Authenticated static-release management (private Unix socket)
+After=local-fs.target
+Before=agent-fileserver.service
+RequiresMountsFor=/var/lib/agent-fileserver
+
+[Service]
+Type=simple
+User=afs-api
+Group=afs-caddy
+WorkingDirectory=/var/lib/agent-fileserver
+EnvironmentFile=/etc/agent-fileserver/environment
+ExecStart=/usr/local/libexec/agent-fileserver serve --socket /run/agent-fileserver-api/http.sock
+ExecStartPost=/usr/bin/curl -q -fs --output /dev/null --max-time 2 --retry 10 --retry-delay 1 --retry-max-time 20 --retry-all-errors --unix-socket /run/agent-fileserver-api/http.sock http://localhost/_internal/health
+TimeoutStartSec=30s
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=20s
+KillMode=control-group
+UMask=0077
+RuntimeDirectory=agent-fileserver-api
+RuntimeDirectoryMode=0750
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+PrivateNetwork=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectKernelLogs=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+# No TCP listener, DNS, outbound HTTP, platform reflection or integrations.
+RestrictAddressFamilies=AF_UNIX
+SystemCallFilter=~io_uring_setup io_uring_enter io_uring_register
+SystemCallArchitectures=native
+ReadWritePaths=/var/lib/agent-fileserver
+InaccessiblePaths=-/var/lib/agent-fileserver-caddy -/var/log/agent-fileserver
+# CLI administration outside this mount namespace may update the registry.
+# A compromised service cannot mint credentials by changing its hash file.
+ReadOnlyPaths=/var/lib/agent-fileserver/credentials
+InaccessiblePaths=-/exe.dev -/etc/ssh -/run/dbus -/run/systemd/private
+MemoryMax=1536M
+Environment=GOMEMLIMIT=512MiB
+CPUQuota=150%
+TasksMax=96
+LimitNOFILE=4096
+StandardOutput=journal
+StandardError=journal
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=1000
+
+[Install]
+WantedBy=multi-user.target

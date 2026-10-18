@@ -1,0 +1,69 @@
+name: Tests
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      matrix:
+        go: ['1.26.x', '1.27.x']
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: ${{ matrix.go }}
+          cache: true
+      - name: Native prerequisites
+        run: sudo apt-get update && sudo apt-get install -y brotli
+      - name: Go race tests and vet
+        run: |
+          go test -race ./...
+          go vet ./...
+          test -z "$(gofmt -l -- *.go)"
+      - name: Python client and installer tests
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          python3 -B -m unittest discover -s client -v
+          python3 -B -m unittest discover -s tests/installer -p 'test_*.py' -v
+      - name: Validate direct and proxy configurations without installing
+        run: |
+          ./install.sh --validate-only --base-url https://files.example.com --download-deps
+          ./install.sh --validate-only --mode proxy --base-url https://files.example.com --download-deps
+
+  fresh-install:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Disposable systemd host (no host mounts or published ports)
+        run: |
+          docker build -f tests/installer/Dockerfile -t afs-installer-test .
+          docker run -d --name afs-installer-test --privileged --cgroupns=private \
+            --tmpfs /run --tmpfs /run/lock --tmpfs /tmp \
+            --tmpfs /sys/fs/cgroup:rw afs-installer-test
+          for attempt in $(seq 1 30); do
+            docker exec afs-installer-test systemctl is-system-running --wait && break
+            test "$attempt" -lt 30 || docker exec afs-installer-test systemctl --failed
+          done
+          docker exec afs-installer-test python3 tests/installer/container-smoke.py
+      - name: Stop only this disposable fixture
+        if: always()
+        run: docker rm -f afs-installer-test || true
