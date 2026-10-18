@@ -52,7 +52,11 @@ class InstallerTests(unittest.TestCase):
         self.assertNotIn('auto_https off', caddy)
         self.assertNotIn('trusted_proxies', caddy)
         self.assertIn('max_size 140MiB', caddy)
-        self.assertLess(caddy.index('/mcp /mcp/*'), caddy.index('@write'))
+        self.assertLess(caddy.index('@management path /mcp\n'), caddy.index('@write'))
+        # MCP is the only management interface; the release core is never routed.
+        self.assertNotIn('@management path /_api', caddy)
+        self.assertIn('@private path /_api /_api/* ', caddy)
+        self.assertIn('request>headers>X-Auth-Token replace REDACTED', caddy)
         self.assertLess(caddy.index('forward_auth'), caddy.index('file_server'))
         self.assertIn('roll_keep 14', caddy)
         self.assertIn('mode 0600', caddy)
@@ -68,12 +72,16 @@ class InstallerTests(unittest.TestCase):
             self.assertIn('/var/lib/agent-fileserver/' + private, web)
         api = files[installer.UNITS / installer.API_UNIT][0]
         for setting in ('PrivateNetwork=true', 'ProtectHome=true', 'RestrictAddressFamilies=AF_UNIX',
-                        'CapabilityBoundingSet=\n', 'AmbientCapabilities=\n', 'MemoryMax=1536M',
+                        'CapabilityBoundingSet=\n', 'AmbientCapabilities=\n', 'MemoryMax=1536M', 'MemoryHigh=1280M',
+                        'MemorySwapMax=0', 'CPUQuota=150%', 'TasksMax=96', 'StartLimitIntervalSec=0',
                         'Environment=GOMEMLIMIT=512MiB', 'ReadOnlyPaths=/var/lib/agent-fileserver/credentials'):
             self.assertIn(setting, api)
         self.assertNotIn('migrate-policies', '\n'.join(x[0] for x in files.values()))
         self.assertIn('User=afs-api', api)
         self.assertIn('User=afs-caddy', web)
+        for setting in ('MemoryHigh=384M', 'MemoryMax=512M', 'MemorySwapMax=0', 'CPUQuota=150%',
+                        'TasksMax=128', 'LimitNOFILE=16384', 'StartLimitIntervalSec=0'):
+            self.assertIn(setting, web)
 
     def test_proxy_no_implicit_trust(self):
         files = installer.rendered(self.config('--mode', 'proxy'))

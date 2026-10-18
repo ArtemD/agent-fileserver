@@ -1,20 +1,24 @@
 # Remote MCP
 
-Both MCP and the HTTPS API remain supported. MCP is a bounded adapter over the
-same authenticated API/publisher, not another extraction implementation.
+MCP is the **only** management interface. The tools are a bounded adapter over
+the shared, in-process publisher; the release core is never routed publicly.
 
 ## Connection
 
 - URL: `https://YOUR_HOST/mcp`
 - Transport: **Streamable HTTP**, JSON responses, stateless.
-- Private custom header: `Authorization: Bearer YOUR_AGENT_KEY`
+- Key header (one of):
+  - `Authorization: Bearer YOUR_AGENT_KEY`
+  - `X-Auth-Token: YOUR_AGENT_KEY` — for hosts that reserve `Authorization` for
+    OAuth, such as Claude's custom connector dialog ("No sign-in" + request header).
+    Used only when no `Authorization` header is present.
 - No OAuth, query-token, local executable, legacy SSE, or anonymous tool access.
 
-Create/revoke named keys locally as described in README. A key manages the whole
-installation; it cannot administer keys or the operating system. Supply the
-header on every request, including discovery/initialization. Store it in the
-client's secret connector settings, never a skill, tool arguments or the repo.
-Revocation takes effect on subsequent calls; already-admitted work may complete.
+Create/revoke named keys on the server as described in the README. A key manages
+the whole installation; it cannot administer keys or the operating system.
+Supply the header on every request, including discovery/initialization. Store
+it in the client's secret connector settings, never a skill, tool arguments or
+the repo. Revocation takes effect on subsequent calls; admitted work may complete.
 
 Clients that require OAuth, persistent sessions, legacy SSE or GET event streams
 without POST/JSON support are not compatible. `/mcp` GET/DELETE return 405.
@@ -83,11 +87,10 @@ Reset returns a new secret visitor password; don't put it in public messages or
 logs. Remove-password makes a release public. Delete is permanent at the origin.
 Confirm the selected release before destructive operations.
 
-Inline downloads are at most 1 MiB; larger files/sites return an HTTPS API URL
-requiring the same Bearer header. It is neither signed nor anonymously usable.
-The client must implement authenticated download; a link alone does not attach
-the file to a conversation. Lists over 1,000 releases require the API instead.
-Captured API output is bounded to 2 MiB (the MCP result envelope adds overhead).
+Downloads are inline only: at most 1 MiB of base64. Larger releases are refused
+with an error, because there is no other management interface; keep your own copy
+of large artifacts. `list_releases` returns the newest 1,000 releases. Captured
+output is bounded to 2 MiB (the MCP result envelope adds overhead).
 
 ## Limits and real-client testing
 
@@ -114,8 +117,7 @@ For Claude/Cowork or another host:
    fixture.
 5. Increase sizes to what you actually need; report the largest proven size.
 
-If the host cannot inject local file bytes into JSON tool arguments, that
-particular workflow is not solved by a remote connector. Keep using the
-HTTPS client from an approved file-capable runtime, or add a separately designed
-transfer integration. This server deliberately does not fetch arbitrary URLs,
-execute uploaded helpers, or expose unauthenticated one-time upload capabilities.
+If the host cannot put local file bytes into JSON tool arguments, that host can
+only publish what it can generate as text or base64. This server deliberately
+does not fetch arbitrary URLs, execute uploaded helpers, or expose unauthenticated
+one-time upload capabilities.

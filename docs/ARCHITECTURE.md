@@ -5,15 +5,15 @@ instances, hostnames and credentials; releases on one instance share a browser
 origin and all its agent keys can manage all its releases.
 
 ```text
-MCP client                     HTTPS API / Python client
-  Authorization: Bearer key      Authorization: Bearer key
-              \                 /
-               Caddy HTTPS ingress
+MCP client (Claude, Claude Code, …)
+  Authorization: Bearer key  or  X-Auth-Token: key
+                       |
+               Caddy HTTPS ingress  (routes only /mcp to the service)
                        |
                private Unix socket
                        |
               unprivileged Go service
-             MCP adapter -> shared API
+        MCP adapter -> in-process release core
                        |
               common publisher core
        validate -> stage -> private policy -> atomic activation
@@ -23,7 +23,10 @@ MCP client                     HTTPS API / Python client
 Visitors -> Caddy -> internal policy check -> Caddy static file bytes
 ```
 
-MCP is an additional interface, not a second filesystem writer. It uses the
+MCP is the only management interface and not a second filesystem writer: its
+tools call the shared release core in-process. That core answers no public HTTP
+route; Caddy routes only `/mcp`, and the service refuses anything else that did
+not come from the MCP adapter. It uses the
 official MCP Go SDK and Streamable HTTP. Stateless request authentication keeps
 revocation effective on subsequent calls. Management credentials are headers,
 never tool arguments, query parameters, browser cookies or visitor passwords.
@@ -59,11 +62,11 @@ special files, encrypted/unsupported ZIPs, corrupt data and resource-limit
 violations are rejected. Known harmless Mac packaging metadata is the only
 documented omission; secrets are rejected, not silently removed.
 
-The HTTPS API streams multipart uploads. MCP JSON requires encoding binary data;
-base64 overhead and JSON parsing cost are real. MCP request admission and body
-limits protect the service; the decoded archive/extracted-content limits still
-apply. A server accepting a large request does not establish any particular
-client's attachment, model-context, or tool-argument limits.
+MCP JSON requires encoding binary data as base64; that overhead and JSON parsing
+cost are real. MCP request admission and body limits protect the service; the
+decoded archive/extracted-content limits still apply. A server accepting a large
+request does not establish any particular client's attachment, model-context,
+or tool-argument limits.
 
 ## Credentials and privacy
 
@@ -84,6 +87,12 @@ All content on one hostname shares an origin: trust uploaded browser JavaScript
 and do not use production company login sessions here.
 
 ## Resource and audit boundaries
+
+Both services run under systemd caps so a request flood or memory leak degrades
+one service instead of the host: the API has `MemoryHigh=1280M`/`MemoryMax=1536M`,
+`CPUQuota=150%`, `TasksMax=96`; Caddy has `MemoryHigh=384M`/`MemoryMax=512M`,
+`CPUQuota=150%`, `TasksMax=128`, `LimitNOFILE=16384`. Neither may swap. Crashes
+restart every 5 s indefinitely (`StartLimitIntervalSec=0`) rather than giving up.
 
 Default limits: 100 MiB archive wire/decoded input, 100 MiB extracted originals,
 5,000 filesystem objects including implicit directories, bounded depth and path

@@ -64,9 +64,15 @@ For an external/platform frontend, select its actual listener/reachability and
 **explicit exact** source IPs/CIDRs, repeating `--trusted-proxy` as needed.
 Nothing is inferred; `/0` trust is forbidden. Trusting all clients or fabricated
 forwarding headers defeats client-IP integrity. Restrict direct access to the
-origin at the network boundary when appropriate. Both interfaces require the
-same valid Bearer header. Upstream body/time limits must accommodate MCP's
-base64 overhead, not merely a 100 MiB binary body.
+origin at the network boundary when appropriate. MCP requires the same key header in every mode
+(`Authorization: Bearer` or `X-Auth-Token`). Upstream body/time limits must
+accommodate MCP's base64 overhead, not merely a 100 MiB binary body.
+
+Example: on an exe.dev VM the platform proxy terminates TLS and connects from
+`127.0.0.1`, appending the real client to `X-Forwarded-For`. Use
+`--listen 127.0.0.1:8000 --trusted-proxy 127.0.0.1/32`, set the VM's proxied port
+to 8000 and make it public. Inside the VM the hostname may resolve to an internal
+address; test the public edge with `curl --resolve HOST:443:PUBLIC_IP`.
 
 ## Managed layout
 
@@ -93,7 +99,8 @@ Enabled units: `agent-fileserver-api.service`, `agent-fileserver.service`,
 only and uses `try-restart`; intentionally stopped units stay stopped.
 `--no-healthcheck` disables the timer on a fresh install. Health does not prove
 public certificates, DNS, network reachability or correct website behavior.
-Large MCP input needs RAM headroom: retain 1536 MiB API cgroup maximum and
+Each unit has memory/CPU/process caps and restarts indefinitely with a 5 s delay
+(see [architecture](ARCHITECTURE.md#resource-and-audit-boundaries)). Large MCP input needs RAM headroom: retain 1536 MiB API cgroup maximum and
 512 MiB Go soft limit, and allow at least 2 GiB host RAM for that workload.
 
 ## Upgrades
@@ -137,4 +144,5 @@ install fresh and generate independent keys instead of cloning credentials.
 
 No destructive uninstall command is included. Stop/disable only this project's
 units and review backup/data retention before explicitly removing owned paths.
-No routine agent operation needs SSH or operating-system access.
+No routine agent operation needs SSH or operating-system access. Agents use MCP
+only; the owner uses SSH only for key administration and upgrades.

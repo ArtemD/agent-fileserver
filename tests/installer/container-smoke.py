@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Run ONLY inside the disposable privileged systemd fixture, never a real host."""
+import base64
 import hashlib
 import io
 import json
@@ -51,7 +52,7 @@ run(['curl', '-fsS', '--unix-socket', '/run/agent-fileserver-api/http.sock',
 run(['systemctl', 'is-active', '--quiet', 'agent-fileserver-healthcheck.timer'])
 run(['systemctl', 'start', 'agent-fileserver-healthcheck.service'])
 get('/', 404)
-get('/_api/v1/me', 401)
+get('/_api/v1/me', 404)  # MCP is the only management interface
 get('/mcp', 401)  # route must reach API before anonymous GET/POST gate
 request = urllib.request.Request('http://127.0.0.1:8000/mcp', data=b'{}', method='POST')
 try:
@@ -60,46 +61,44 @@ except urllib.error.HTTPError as e:
     assert e.code == 401
 else:
     raise AssertionError('anonymous MCP POST unexpectedly permitted')
-for p in ('/_internal/health', '/credentials/tokens.json', '/policies/example.json', '/.env'):
+for p in ('/_internal/health', '/_api/v1/releases', '/credentials/tokens.json', '/policies/example.json', '/.env'):
     get(p, 404)
 
-# Generate fixture-only credentials privately, create a release through the CLI,
-# then verify upgrade never rewrites data, policies, registry, or config.
+# Generate fixture-only credentials privately and create a release through MCP
+# (the only management interface), then verify upgrade never rewrites data,
+# policies, registry, or config.
 secret = run(['/usr/local/bin/agent-fileserver', 'token', 'create', '--label', 'fixture'],
-             capture_output=True).stdout
-assert secret.strip()
-site = Path('/tmp/afs-fixture-site')
-site.mkdir(mode=0o755)
-(site / 'index.html').write_text('<h1>installer fixture</h1>')
-(site / 'index.html').chmod(0o644)
-(site / 'style.css').write_text('body { color: navy; }\n' * 200)
-(site / 'style.css').chmod(0o644)
-result = run(['/usr/local/bin/agent-fileserver', '--json', str(site)], capture_output=True)
-release = json.loads(result.stdout)
-get('/' + release['token'] + '/', 200)
-assert (Path('/var/lib/agent-fileserver/public') / release['token'] / 'style.css.br').is_file()
-# Exercise brotli from the sandboxed API worker, not only the local CLI.
+             capture_output=True).stdout.decode().strip()
+assert secret
 archive = io.BytesIO()
 with tarfile.open(fileobj=archive, mode='w') as tar:
-    for name in ('index.html', 'style.css'):
-        data = (site / name).read_bytes()
+    for name, data in (('index.html', b'<h1>installer fixture</h1>'),
+                       ('style.css', b'body { color: navy; }\n' * 200)):
         info = tarfile.TarInfo('site/' + name)
         info.size, info.mode = len(data), 0o644
         tar.addfile(info, io.BytesIO(data))
-boundary = 'afs-disposable-fixture-boundary'
-body = (f'--{boundary}\r\nContent-Disposition: form-data; name="metadata"\r\n'
-        'Content-Type: application/json\r\n\r\n{"label":"fixture-api"}\r\n'
-        f'--{boundary}\r\nContent-Disposition: form-data; name="artifact"; filename="site.tar"\r\n'
-        'Content-Type: application/octet-stream\r\n\r\n').encode()
-body += archive.getvalue() + f'\r\n--{boundary}--\r\n'.encode()
-request = urllib.request.Request('http://127.0.0.1:8000/_api/v1/releases', data=body, method='POST',
-    headers={'Authorization': 'Bearer ' + secret.decode().strip(),
-             'Content-Type': 'multipart/form-data; boundary=' + boundary,
-             'Idempotency-Key': 'installer-fixture-idempotency-0001'})
-with urllib.request.urlopen(request) as response:
-    assert response.status == 201
-    api_release = json.load(response)
-assert (Path('/var/lib/agent-fileserver/public') / api_release['token'] / 'style.css.br').is_file()
+
+
+def mcp_tool(name, arguments, header='Authorization', value='Bearer ' + secret):
+    body = json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+                       'params': {'name': name, 'arguments': arguments}}).encode()
+    request = urllib.request.Request('http://127.0.0.1:8000/mcp', data=body, method='POST', headers={
+        header: value, 'Content-Type': 'application/json',
+        'Accept': 'application/json, text/event-stream', 'MCP-Protocol-Version': '2025-06-18'})
+    with urllib.request.urlopen(request) as response:
+        assert response.status == 200
+        result = json.load(response)['result']
+    assert not result.get('isError'), name
+    return json.loads(result['content'][0]['text'])
+
+
+release = mcp_tool('publish_archive', {'label': 'fixture-mcp', 'idempotency_key': 'installer-fixture-idempotency-0001',
+                                       'archive_base64': base64.b64encode(archive.getvalue()).decode()})
+get('/' + release['token'] + '/', 200)
+# Brotli runs inside the sandboxed API worker.
+assert (Path('/var/lib/agent-fileserver/public') / release['token'] / 'style.css.br').is_file()
+# Claude-style static key header authenticates the same way.
+assert mcp_tool('server_info', {}, header='X-Auth-Token', value=secret)['agent'] == 'fixture'
 root = Path('/var/lib/agent-fileserver')
 protected = {p: sha(p) for p in root.rglob('*') if p.is_file()}
 protected[Path('/etc/agent-fileserver/environment')] = sha(Path('/etc/agent-fileserver/environment'))

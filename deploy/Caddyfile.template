@@ -43,9 +43,9 @@
 	}
 
 	route {
-		# Management is explicitly authenticated by the isolated Go service.
-		# This route is deliberately before the read-only public-file rules.
-		@management path /_api/v1 /_api/v1/* /mcp /mcp/*
+		# MCP is the only management interface, authenticated by the isolated Go
+		# service. This route is deliberately before the read-only public-file rules.
+		@management path /mcp
 		handle @management {
 			request_body {
 				max_size 140MiB
@@ -60,7 +60,7 @@
 		}
 
 		# No internal authorization, policy, credential, or filesystem paths.
-		@private path /_internal /_internal/* /credentials /credentials/* /policies /policies/* /staging /staging/* /manifests /manifests/* /incoming /incoming/* /api-state /api-state/* /trash /trash/*
+		@private path /_api /_api/* /_internal /_internal/* /credentials /credentials/* /policies /policies/* /staging /staging/* /manifests /manifests/* /incoming /incoming/* /api-state /api-state/* /trash /trash/*
 		respond @private "Not Found" 404
 
 		@write not method GET HEAD

@@ -37,7 +37,7 @@ func runManagement(args []string, stdout, stderr io.Writer) error {
 	switch args[0] {
 	case "token":
 		if len(args) < 2 {
-			return fmt.Errorf("usage: publish token create|list|revoke")
+			return fmt.Errorf("usage: agent-fileserver token create|list|revoke")
 		}
 		// Parse before opening the registry; typos must not create credentials.
 		label, days := "", 0
@@ -50,15 +50,15 @@ func runManagement(args []string, stdout, stderr io.Writer) error {
 				return err
 			}
 			if f.NArg() != 0 || label == "" || days < 0 {
-				return fmt.Errorf("usage: publish token create --label NAME [--days N]")
+				return fmt.Errorf("usage: agent-fileserver token create --label NAME [--days N]")
 			}
 		case "list":
 			if len(args) != 2 {
-				return fmt.Errorf("usage: publish token list")
+				return fmt.Errorf("usage: agent-fileserver token list")
 			}
 		case "revoke":
 			if len(args) != 3 || args[2] == "" {
-				return fmt.Errorf("usage: publish token revoke LABEL")
+				return fmt.Errorf("usage: agent-fileserver token revoke LABEL")
 			}
 			label = args[2]
 		default:
@@ -87,7 +87,7 @@ func runManagement(args []string, stdout, stderr io.Writer) error {
 		}
 	case "migrate-policies":
 		if len(args) != 1 {
-			return fmt.Errorf("usage: publish migrate-policies")
+			return fmt.Errorf("usage: agent-fileserver migrate-policies")
 		}
 		s, err := newStore(os.Getenv("FSERVER_ROOT"), os.Getenv("FSERVER_BASE_URL"))
 		if err != nil {
@@ -102,7 +102,7 @@ func runManagement(args []string, stdout, stderr io.Writer) error {
 			return err
 		}
 		if f.NArg() != 0 || *socket == "" {
-			return fmt.Errorf("usage: publish serve --socket PATH [--token-file PATH]")
+			return fmt.Errorf("usage: agent-fileserver serve --socket PATH [--token-file PATH]")
 		}
 		s, err := newStore(os.Getenv("FSERVER_ROOT"), os.Getenv("FSERVER_BASE_URL"))
 		if err != nil {

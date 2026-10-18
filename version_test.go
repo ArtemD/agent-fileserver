@@ -29,24 +29,6 @@ func TestHelpAndVersionDoNotOpenStore(t *testing.T) {
 	}
 }
 
-func TestLeadingDashReleaseTokenIsAnOperand(t *testing.T) {
-	token := "-Aabcdefghijklmnopqrst"
-	if !validToken(token) {
-		t.Fatal("invalid test token")
-	}
-	for _, command := range []string{"info", "unpublish"} {
-		for _, args := range [][]string{{command, token}, {command, "--json", token}, {command, token, "--json"}} {
-			got, err := parseArgs(args)
-			if err != nil || got.operand != token || got.command != command {
-				t.Fatalf("leading-dash token rejected: %v: %v", args, err)
-			}
-		}
-	}
-	if _, err := parseArgs([]string{"info", "--not-a-real-flag"}); err == nil {
-		t.Fatal("ordinary unknown option accepted")
-	}
-}
-
 func TestDefaultTokenFileUsesConfiguredRoot(t *testing.T) {
 	t.Setenv("FSERVER_TOKEN_FILE", "")
 	root := t.TempDir()

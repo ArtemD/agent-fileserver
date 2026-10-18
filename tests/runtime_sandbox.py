@@ -6,12 +6,12 @@ It does NOT inherit that process's seccomp/cgroup filters; those are separately
 checked through installed unit properties and /proc/status, not falsely probed.
 """
 
-import json
 import os
 from pathlib import Path
-import shlex
 import subprocess
 import tempfile
+
+from mcp_fixture import MCPFixture
 
 AS_ROOT = [] if os.geteuid() == 0 else ["sudo"]
 API_UNIT = os.environ.get("FSERVER_TEST_API_UNIT", "agent-fileserver-api")
@@ -20,8 +20,7 @@ HEALTH_UNIT = os.environ.get("FSERVER_TEST_HEALTH_UNIT", "agent-fileserver-healt
 ROOT = os.environ.get("FSERVER_TEST_ROOT", "/var/lib/agent-fileserver")
 API_USER = os.environ.get("FSERVER_TEST_API_USER", "afs-api")
 WEB_USER = os.environ.get("FSERVER_TEST_WEB_USER", "afs-caddy")
-CLI = shlex.split(os.environ.get(
-    "FSERVER_TEST_PUBLISH", " ".join([*AS_ROOT, "/usr/local/bin/agent-fileserver"])))
+BASE = os.environ.get("FSERVER_TEST_BASE", "http://localhost:8000")
 
 
 def prop(unit, name):
@@ -78,14 +77,11 @@ print("PASS API: dedicated UID, zero capabilities, no-new-privileges/seccomp,"
       " actual credential mount read-only, owner/platform paths hidden,"
       " isolated network has no external route")
 
+mcp = MCPFixture(BASE, os.environ.get("FSERVER_TEST_RESOLVE"), prefix="runtime-sandbox")
 with tempfile.TemporaryDirectory(prefix="fserver-sandbox-fixture-") as folder:
-    fixture = Path(folder)
-    fixture.chmod(0o755)
-    source = fixture / "sandbox.txt"
+    source = Path(folder) / "sandbox.txt"
     source.write_text("Synthetic sandbox read-only fixture.\n")
-    source.chmod(0o644)
-    release = json.loads(subprocess.check_output(
-        [*CLI, "--json", str(source)]))
+    release = mcp.publish(source)
 try:
     public = ROOT + "/public/" + release["token"]
     enter(caddy, caddy_uid, gid, (r'''
@@ -107,9 +103,7 @@ for current,dirs,files in os.walk(root):
 else:raise AssertionError("no payload available for read-only check")
 ''').replace("ROOT_LITERAL", repr(ROOT)).replace("OWNER_HOME_LITERAL", repr(str(Path.home()))))
 finally:
-    subprocess.run(
-        [*CLI, "unpublish", release["token"]],
-        check=True, capture_output=True)
+    mcp.close()
 print("PASS Caddy: public bytes readable/not writable; owner home,"
       " policies, manifests and credentials inaccessible")
 

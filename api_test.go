@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"mime/multipart"
+	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
@@ -50,8 +51,14 @@ func testAPI(t *testing.T) apiFixture {
 	}
 	return apiFixture{a, key, tokens}
 }
+
+// internal marks a test request as an in-process MCP-adapter call; the release
+// core is never reachable as a public HTTP route.
+func internal(r *http.Request) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), internalCallKey{}, true))
+}
 func (f apiFixture) do(method, target string, body []byte, content, key string) *httptest.ResponseRecorder {
-	r := httptest.NewRequest(method, target, bytes.NewReader(body))
+	r := internal(httptest.NewRequest(method, target, bytes.NewReader(body)))
 	r.Header.Set("Authorization", "Bearer "+f.key)
 	r.Header.Set("X-Fserver-Client-IP", "192.0.2.1")
 	if content != "" {
@@ -173,7 +180,7 @@ func TestAPIManagementPasswordDownloadDelete(t *testing.T) {
 			}
 		}
 	}
-	r := httptest.NewRequest("GET", base+"/download", nil)
+	r := internal(httptest.NewRequest("GET", base+"/download", nil))
 	r.Header.Set("Authorization", "Bearer "+f.key)
 	r.Header.Set("Range", "bytes=2-5")
 	w := httptest.NewRecorder()
@@ -383,7 +390,7 @@ func TestAPIRatesBusyAndCancellation(t *testing.T) {
 	f = testAPI(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	r := httptest.NewRequest("POST", "/_api/v1/releases", bytes.NewReader(b)).WithContext(ctx)
+	r := httptest.NewRequest("POST", "/_api/v1/releases", bytes.NewReader(b)).WithContext(context.WithValue(ctx, internalCallKey{}, true))
 	r.Header.Set("Authorization", "Bearer "+f.key)
 	r.Header.Set("Idempotency-Key", requestID())
 	r.Header.Set("Content-Type", ct)
@@ -721,5 +728,30 @@ func TestAPIDiskAvailableBytesAndInodes(t *testing.T) {
 	assertAPIStatus(t, w, 200)
 	if !strings.Contains(w.Body.String(), `"min_free_inodes":20000`) {
 		t.Fatal("inode reserve missing from limits", w.Body)
+	}
+}
+
+func TestPublicHTTPOnlyServesMCP(t *testing.T) {
+	f := testAPI(t)
+	for _, target := range []string{"/_api/v1/me", "/_api/v1/releases", "/_api/v1/releases/AAAAAAAAAAAAAAAAAAAAAA", "/", "/mcp/", "/api"} {
+		for _, method := range []string{"GET", "POST", "DELETE"} {
+			r := httptest.NewRequest(method, target, nil)
+			r.Header.Set("Authorization", "Bearer "+f.key)
+			w := httptest.NewRecorder()
+			f.a.ServeHTTP(w, r)
+			if w.Code != 404 {
+				t.Fatalf("%s %s: status %d, want 404 (MCP is the only public interface)", method, target, w.Code)
+			}
+		}
+	}
+	r := httptest.NewRequest("POST", "/mcp", bytes.NewReader([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`)))
+	r.Header.Set("Authorization", "Bearer "+f.key)
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Accept", "application/json, text/event-stream")
+	r.Header.Set("MCP-Protocol-Version", "2025-06-18")
+	w := httptest.NewRecorder()
+	f.a.ServeHTTP(w, r)
+	if w.Code != 200 {
+		t.Fatalf("MCP tools/list: status %d", w.Code)
 	}
 }

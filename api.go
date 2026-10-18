@@ -325,6 +325,12 @@ func managementKey(r *http.Request) string {
 	return ""
 }
 
+// mcpListMax bounds list_releases output (newest first).
+const mcpListMax = 1000
+
+// internalCallKey marks requests dispatched in-process by the MCP adapter.
+type internalCallKey struct{}
+
 func (a *apiServer) ServeHTTP(out http.ResponseWriter, r *http.Request) {
 	w := &apiResponse{ResponseWriter: out}
 	start := time.Now()
@@ -354,6 +360,12 @@ func (a *apiServer) ServeHTTP(out http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/_internal/authorize" && canonicalAPIPath(r) {
 		operation = "authorize"
 		a.authorize(w, r, id)
+		return
+	}
+	// MCP is the only public management interface. The release core under
+	// /_api/v1 answers only in-process calls from the MCP adapter.
+	if r.URL.Path != "/mcp" && r.Context().Value(internalCallKey{}) == nil {
+		apiError(w, 404, id, "not found")
 		return
 	}
 	// Authenticate before inspecting paths or reading any request body.
@@ -403,11 +415,10 @@ func (a *apiServer) ServeHTTP(out http.ResponseWriter, r *http.Request) {
 				apiError(w, 500, id, "could not list releases")
 				return
 			}
-			// Bound JSON serialization as well as capture size for the MCP
-			// adapter. Ordinary REST listing semantics remain unchanged.
-			if _, viaMCP := r.Context().Value(mcpRequestKey{}).(*http.Request); viaMCP && len(ms) > 1000 {
-				apiError(w, 413, id, "too many releases for MCP; use the authenticated HTTPS API")
-				return
+			// Bound JSON serialization and MCP capture size: the list is sorted
+			// newest first, so return only the newest releases.
+			if len(ms) > mcpListMax {
+				ms = ms[:mcpListMax]
 			}
 			views := make([]releaseView, 0, len(ms))
 			for _, m := range ms {

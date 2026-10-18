@@ -11,17 +11,15 @@ import json
 import os
 from pathlib import Path
 import re
-import shlex
 import subprocess
 import tempfile
 import unittest
 from urllib.parse import urlsplit
 
+from mcp_fixture import MCPFixture
+
 BASE = os.environ.get("FSERVER_TEST_BASE", "http://localhost:8000").rstrip("/")
 RESOLVE = os.environ.get("FSERVER_TEST_RESOLVE")
-PUBLISH = shlex.split(os.environ.get(
-    "FSERVER_TEST_PUBLISH", "/usr/local/bin/agent-fileserver"
-    if os.geteuid() == 0 else "sudo /usr/local/bin/agent-fileserver"))
 
 
 class Acceptance(unittest.TestCase):
@@ -29,10 +27,8 @@ class Acceptance(unittest.TestCase):
     def setUpClass(cls):
         cls.temp = tempfile.TemporaryDirectory(prefix="fserver-acceptance-")
         cls.work = Path(cls.temp.name)
-        # Fixtures contain only synthetic public bytes. The owner CLI now drops
-        # to the dedicated publishing UID, which must traverse this test root.
-        cls.work.chmod(0o755)
-        cls.releases = []
+        # Releases are created exactly as agents create them: through MCP.
+        cls.mcp = MCPFixture(BASE, RESOLVE, prefix="http-acceptance")
         cls.site = cls.work / "site"
         cls.site.mkdir()
         (cls.site / "index.html").write_text(
@@ -44,7 +40,7 @@ class Acceptance(unittest.TestCase):
         (cls.site / "empty").mkdir()
         cls.release = cls.publish(cls.site)
         cls.path = "/" + cls.release["token"] + "/"
-        cls.spa = cls.publish(cls.site, "--spa")
+        cls.spa = cls.publish(cls.site, spa=True)
         cls.spa_path = "/" + cls.spa["token"] + "/"
         cls.pdf = cls.work / "Proposal with spaces.pdf"
         cls.pdf_bytes = b"%PDF-1.7\n% Static file acceptance fixture\n%%EOF\n"
@@ -52,20 +48,15 @@ class Acceptance(unittest.TestCase):
         cls.document = cls.publish(cls.pdf)
 
     @classmethod
-    def publish(cls, source, *flags):
-        result = subprocess.run(
-            [*PUBLISH, "--json", *flags, str(source)],
-            capture_output=True, text=True, check=True,
-        )
-        release = json.loads(result.stdout)
-        cls.releases.append(release["token"])
-        return release
+    def publish(cls, source, spa=False):
+        return cls.mcp.publish(source, spa=spa)
 
     @classmethod
     def tearDownClass(cls):
-        for token in cls.releases:
-            subprocess.run([*PUBLISH, "unpublish", token], check=True, capture_output=True)
-        cls.temp.cleanup()
+        try:
+            cls.mcp.close()
+        finally:
+            cls.temp.cleanup()
 
     def request(self, path, *args):
         with tempfile.TemporaryDirectory(prefix="fserver-http-") as folder:
@@ -208,8 +199,7 @@ class Acceptance(unittest.TestCase):
         self.assertNotEqual(first["token"], second["token"])
         self.assertRegex(first["token"], r"^[A-Za-z0-9_-]{22}$")
         token = first["token"]
-        subprocess.run([*PUBLISH, "unpublish", token], capture_output=True, check=True)
-        self.releases.remove(token)
+        self.mcp.delete(token)
         self.assertEqual(self.request("/" + token + "/")[0], 404)
         self.assertEqual(self.request("/" + second["token"] + "/")[0], 200)
 

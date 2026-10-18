@@ -7,11 +7,17 @@ fixtures; never run installed/container tests against an unrelated server.
 go test -race ./...
 go vet ./...
 go mod verify
-python3 -B -m unittest discover -s client -v
+python3 scripts/check_consistency.py
 python3 -B -m unittest discover -s tests/installer -p 'test_*.py' -v
 ./install.sh --validate-only --base-url https://files.example.com --download-deps
 ./install.sh --validate-only --mode proxy --base-url https://files.example.com --download-deps
 ```
+
+`scripts/check_consistency.py` fails CI when code, docs, tests and CI drift apart
+(undocumented/untested MCP tools, test files missing here, removed interfaces
+still mentioned, unpinned actions, resource limits not matching docs) or when a
+secret, binary, large file or ignored file is tracked. `tests/installer/test_install.py`
+covers installer rendering, refusal and upgrade logic without root.
 
 Go tests cover safe publication, policies/credentials, replay/recovery,
 tar/ZIP traversal/type/CRC/limits, API admission/privacy and MCP. MCP tests use
@@ -32,6 +38,11 @@ Cowork attachment mechanism, cloud account or model-context limit.
 
 ## Installed owner-only tests
 
+All installed tests publish through MCP, exactly like agents do. They create a
+one-day fixture key with the owner CLI (`FSERVER_TEST_ADMIN`, default
+`sudo /usr/local/bin/agent-fileserver`), delete only their own releases and
+revoke only their own keys. Shared helper: `tests/mcp_fixture.py`.
+
 These create named temporary keys/releases and remove only those fixtures.
 They need the installed local administrative wrapper and sudo for private logs.
 Run against your own test installation, not a third party or production host
@@ -39,7 +50,6 @@ without operator approval.
 
 ```sh
 FSERVER_TEST_BASE=https://files.example.com python3 tests/http_acceptance.py
-FSERVER_TEST_BASE=https://files.example.com python3 tests/api_acceptance.py
 FSERVER_TEST_BASE=https://files.example.com python3 tests/mcp_live.py
 FSERVER_TEST_BASE=https://files.example.com python3 tests/access_logging.py
 python3 tests/runtime_sandbox.py
@@ -51,15 +61,14 @@ TLS hostname/certificate verification; never use `-k`. Owner tests default to
 the standard installer paths. Legacy/manual setups can explicitly override the
 CLI, log, units, root and users; see environment constants in the scripts.
 
-`api_acceptance.py` tests token scope/revocation, idempotency, optional protection,
-password CRUD, download/delete, archive limits and log privacy. Public HTTPS is
-needed for the external forwarded-IP spoof check; localhost is itself a trusted
-proxy caller and cannot establish that property. `http_acceptance.py` checks
-static MIME, compression, caching/ranges, SPA/404 and denial behavior.
-`mcp_live.py` exercises the same operations through a real installed Streamable
-HTTP endpoint with captured fixture-only keys. Its optional large-file probe
-streams a 100 MiB archive as base64 JSON through Caddy, verifies original bytes
-and deletes its own release; enable this installed-client probe with
+`http_acceptance.py` checks static MIME, compression, caching/ranges, SPA/404,
+denial behaviour and immutable publish/delete. `access_logging.py` checks
+unsampled logs, secret redaction (including `X-Auth-Token`) and, over public
+HTTPS, that a caller cannot forge its IP through `X-Forwarded-For`. `mcp_live.py` exercises every tool through the real installed Streamable HTTP
+endpoint with fixture-only keys, both key headers, revocation, and that no
+non-MCP management route is reachable. Its optional large-file probe
+streams a 100 MiB archive as base64 JSON through Caddy, checks that its download
+is refused (inline limit 1 MiB) and deletes its own release; enable this installed-client probe with
 `FSERVER_TEST_LARGE=1` (distinct from the Go unit test's flag above).
 
 ## Fresh systemd installation fixture

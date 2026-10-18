@@ -434,7 +434,7 @@ def apply(a, c, files, api, web, previous):
             subprocess.run(['systemctl', 'stop', HEALTH_TIMER, HEALTH_UNIT, WEB_UNIT, API_UNIT])
             print('Fresh installation failed after host changes; partial paths retained for operator review. No automatic deletion.', file=sys.stderr)
         raise
-    print(f'Installed {c["base_url"]} ({c["mode"]}); API /_api/v1, MCP /mcp, namespace {c["namespace"]}.')
+    print(f'Installed {c["base_url"]} ({c["mode"]}); MCP /mcp (only management interface), namespace {c["namespace"]}.')
     print('Create a named key separately: sudo agent-fileserver token create --label my-agent')
     print('The command prints the secret once: use a private terminal/file, never a build log.')
 

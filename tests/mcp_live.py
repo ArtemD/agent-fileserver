@@ -4,7 +4,7 @@
 Run: python3 tests/mcp_live.py
 Knobs: FSERVER_TEST_BASE (default http://localhost:8000),
 FSERVER_TEST_RESOLVE (curl --resolve, with normal TLS verification), and
-FSERVER_TEST_PUBLISH (shlex-split local administration command; defaults to
+FSERVER_TEST_ADMIN (shlex-split local administration command; defaults to
 /usr/local/bin/agent-fileserver as root, otherwise sudo plus that path).
 
 Creates its own one-day fixture credentials and synthetic releases, then deletes
@@ -37,11 +37,10 @@ import zlib
 BASE = os.environ.get("FSERVER_TEST_BASE", "http://localhost:8000").rstrip("/")
 RESOLVE = os.environ.get("FSERVER_TEST_RESOLVE")
 CLI = shlex.split(os.environ.get(
-    "FSERVER_TEST_PUBLISH", "/usr/local/bin/agent-fileserver"
+    "FSERVER_TEST_ADMIN", "/usr/local/bin/agent-fileserver"
     if os.geteuid() == 0 else "sudo /usr/local/bin/agent-fileserver"))
 TOKEN = re.compile(r"[A-Za-z0-9_-]{22}\Z")
 KEY = re.compile(r"[A-Za-z0-9_-]{43}\Z")
-API = "/_api/v1/releases"
 HTML = b"<!doctype html><title>MCP fixture</title><h1>Published through MCP</h1>"
 CSS = b"body { color: #123456; background: white; }\n"
 
@@ -141,21 +140,21 @@ class MCPLive(unittest.TestCase):
             if cls.key:
                 # Recover only OUR exact labels after any ambiguous tool result.
                 try:
-                    status, _, body = cls.request(API)
-                    if status == 200:
-                        items = json.loads(body)
-                        if isinstance(items, list):
-                            for item in items:
-                                if (isinstance(item, dict)
-                                        and item.get("label") in cls.release_labels
-                                        and TOKEN.fullmatch(item.get("token", ""))):
-                                    cls.releases.add(item["token"])
+                    items = cls.tool("list_releases", {})
+                    if isinstance(items, list):
+                        for item in items:
+                            if (isinstance(item, dict)
+                                    and item.get("label") in cls.release_labels
+                                    and TOKEN.fullmatch(item.get("token", ""))):
+                                cls.releases.add(item["token"])
                 except Exception:
                     failed = True
                 for token in sorted(cls.releases):
                     try:
-                        status, _, _ = cls.request(API + "/" + token, "DELETE")
-                        failed |= status not in (204, 404)
+                        cls.tool("delete_release", {"token": token})
+                    except LiveFailure:
+                        # Already deleted by the test itself is fine.
+                        pass
                     except Exception:
                         failed = True
         finally:
@@ -171,7 +170,7 @@ class MCPLive(unittest.TestCase):
     @classmethod
     def request(cls, path, method="GET", *, body=None, key=None,
                 anonymous=False, password=None, headers=None, max_bytes=4 << 20,
-                as_file=False):
+                as_file=False, key_header="authorization"):
         cls.seq += 1
         stem = cls.work / ("request-" + str(cls.seq))
         hfile = stem.with_suffix(".headers")
@@ -181,6 +180,8 @@ class MCPLive(unittest.TestCase):
         if password is not None:
             basic = base64.b64encode(("viewer:" + password).encode()).decode()
             lines.append("Authorization: Basic " + basic)
+        elif not anonymous and key_header == "x-auth-token":
+            lines.append("X-Auth-Token: " + (key or cls.key))
         elif not anonymous:
             lines.append("Authorization: Bearer " + (key or cls.key))
         for name, value in (headers or {}).items():
@@ -412,6 +413,24 @@ class MCPLive(unittest.TestCase):
             check(status == 401, "revoked credential was not rejected by authentication")
         self.__class__.revocation_status = status
 
+    def test_12_x_auth_token_header(self):
+        # Claude's connector dialog sends static keys as a custom header.
+        message = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+            "name": "server_info", "arguments": {}}}).encode()
+        status, _, body = self.request("/mcp", "POST", body=message, key_header="x-auth-token",
+                                       headers={"Content-Type": "application/json",
+                                                "Accept": "application/json, text/event-stream",
+                                                "MCP-Protocol-Version": "2025-06-18"})
+        check(status == 200 and self.tag in body.decode(errors="replace"),
+              "X-Auth-Token authentication failed")
+
+    def test_13_mcp_is_the_only_management_interface(self):
+        for path in ("/_api/v1/me", "/_api/v1/releases", "/_internal/health",
+                     "/_internal/authorize"):
+            for method in ("GET", "POST"):
+                status, _, _ = self.request(path, method, body=b"{}" if method == "POST" else None)
+                check(status in (404, 405), "non-MCP management route is reachable: " + path)
+
     @unittest.skipUnless(os.environ.get("FSERVER_TEST_LARGE") == "1",
                          "set FSERVER_TEST_LARGE=1 for exact100MiB archive")
     def test_11_optional_large_archive(self):
@@ -453,28 +472,17 @@ class MCPLive(unittest.TestCase):
         check(TOKEN.fullmatch(view.get("token", "")), "large release metadata invalid")
         self.releases.add(view["token"])
         check(view.get("bytes") == payload_size, "large release size mismatch")
-        result = self.tool("download_release", {"token": view["token"]})
-        check(result.get("inline") is False and result.get("requires_bearer_auth") is True,
-              "large download did not use authenticated API fallback")
-        # Verify the complete original through streaming curl-to-disk, without
-        # retaining a100MiB response in the Python process.
-        path = API + "/" + view["token"] + "/download"
-        status, _, data = self.request(path, max_bytes=size, as_file=True)
-        check(status == 200 and data.stat().st_size == payload_size,
-              "large authenticated original download failed")
-        expected = hashlib.sha256()
-        block = b"a" * (1 << 20)
-        remaining = payload_size
-        while remaining:
-            part = block[:min(remaining, len(block))]
-            expected.update(part)
-            remaining -= len(part)
-        actual = hashlib.sha256()
-        with data.open("rb") as downloaded:
-            while chunk := downloaded.read(1 << 20):
-                actual.update(chunk)
-        check(actual.digest() == expected.digest(), "large original download hash mismatch")
-
+        message = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+            "name": "download_release", "arguments": {"token": view["token"]}}}).encode()
+        status, _, body = self.request("/mcp", "POST", body=message, headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+            "MCP-Protocol-Version": "2025-06-18"})
+        check(status == 200, "large download MCP call failed")
+        result = json.loads(body).get("result", {})
+        text = json.dumps(result)
+        check(result.get("isError") is True and "1 MiB" in text and "/_api/" not in text,
+              "large download was not refused inline-only")
 
 if __name__ == "__main__":
     program = unittest.main(testRunner=SafeRunner(verbosity=2), exit=False)

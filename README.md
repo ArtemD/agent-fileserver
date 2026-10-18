@@ -1,188 +1,174 @@
 # Agent Fileserver
 
-Publish static websites, prototypes, PDFs and files to your own server using
-**remote MCP**, a **plain HTTPS API**, or the optional **Python client**. Both
-remote routes share the same publisher, credentials and access controls.
+Let your AI agents publish static websites, prototypes, PDFs and files to your
+own server over **remote MCP**, and get back a fresh, unguessable URL to share.
 
-- Publish a few files or **one ZIP/tar.gz for an entire website**.
+- **MCP is the only interface.** No web UI, no REST API, no upload form, no SSH publishing.
+- Publish a few files or **one ZIP/tar.gz for a whole website**.
 - Fresh unlisted URL per immutable release; optional visitor password.
-- List, inspect, download, delete, and set/change/reset/remove passwords.
-- Caddy serves bytes; a sandboxed Go service handles management.
-- No database, dashboard, uploaded code execution, analytics or directory listing.
-- MIT licensed. One installation per owner; separate instances for other people.
+- List, inspect, download (≤ 1 MiB), delete, and set/reset/remove passwords.
+- Caddy serves bytes; a sandboxed Go service handles MCP on a private Unix socket.
+- No database, analytics, uploaded code execution or directory listing.
+- MIT licensed. One installation per owner; give other people their own instance.
 
-**Supported native target:** Ubuntu 24.04+/Debian 12+ Linux with systemd, amd64 or arm64.
-Production HTTPS needs a domain and reachable ports, or an existing trusted
-HTTPS frontend. The disposable test container is not a production Docker setup.
+**Supported target:** Ubuntu 24.04+ / Debian 12+ with systemd, amd64 or arm64.
 
-> **MCP file transfer:** binary inputs are base64 JSON, not a local filename or
-> Cowork attachment ID. The server supports decoded archives up to 100 MiB, but
-> your MCP host must actually transmit those bytes and may impose smaller limits.
-> Connecting a remote server does not itself grant access to local files.
+```text
+Agent (Claude, …) ──MCP + key──▶ Caddy ──/mcp──▶ Go service ──▶ publisher ──▶ releases
+Visitors ───────────────GET────▶ Caddy ──policy check──▶ static bytes
+```
 
-## Install on a server
+## 1. Install
 
-Point the domain's A/AAAA records at the server and allow inbound TCP 80/443.
-Review a trusted revision before running it as root.
+You need a domain pointing at the server (direct mode), or an existing trusted
+HTTPS frontend (proxy mode). Review the revision you install.
 
 ```sh
 sudo apt-get update
 sudo apt-get install -y ca-certificates curl git python3 systemd passwd util-linux brotli
 git clone https://github.com/ArtemD/agent-fileserver.git
 cd agent-fileserver
-./install.sh --render-only --base-url https://files.example.com
+```
+
+**Direct HTTPS** (Caddy gets certificates; TCP 80/443 must reach the server):
+
+```sh
 sudo ./install.sh --base-url https://files.example.com --download-deps
 ```
 
-The installer builds the checkout, uses compatible installed Go/Caddy or
-checksum-verified pinned official downloads, creates dedicated service accounts,
-validates Caddy/systemd and enables the services/health timer. It refuses existing
-unmanaged paths/accounts. It does **not** change DNS/firewall or silently migrate
-missing policies. An empty credential registry grants no agent access.
+**Behind an HTTPS proxy on the same host** (for example an exe.dev VM, whose
+proxy connects from `127.0.0.1` and terminates TLS):
 
-See [installation/operations](docs/INSTALL.md) for proxy mode, upgrades, backups,
-paths and recovery.
+```sh
+sudo ./install.sh --mode proxy --base-url https://files.example.com \
+  --listen 127.0.0.1:8000 --trusted-proxy 127.0.0.1/32 --download-deps
+```
 
-### Create a private agent key
+Preview without changing anything: add `--render-only` or `--validate-only`.
+The installer refuses to overwrite existing installs and never touches DNS or
+firewalls. Details: [installation and operations](docs/INSTALL.md).
 
-Use a different label per agent. Each key manages **all releases on this instance**.
+## 2. Create an agent key
+
+Keys are created **on the server only**, by the owner. Use one label per agent
+or person so you can revoke them individually. Each key manages **all** releases
+on this instance.
 
 ```sh
 umask 077
-mkdir -p "$HOME/.config/agent-fileserver"
+mkdir -p ~/.config/agent-fileserver
 sudo agent-fileserver-token create --label claude --days 0 \
-  > "$HOME/.config/agent-fileserver/claude.key"
+  > ~/.config/agent-fileserver/claude.key
 ```
 
-The secret is emitted once into that private file; the server stores its hash.
-`--days 0` deliberately means no automatic expiry. Never put the key in Git,
-URLs, uploads, tool arguments, or logs.
+The key is printed once, straight into that private file; the server stores
+only its hash. `--days 0` means no expiry (use `--days 90` for one). Read it
+when you configure a client, from your own terminal: `cat ~/.config/agent-fileserver/claude.key`.
+Never put it in Git, chat, skills, prompts, URLs or tool arguments.
 
-## Connect with MCP
+## 3. Connect and authenticate
 
-In a remote Streamable HTTP client supporting custom headers:
+Endpoint: `https://YOUR_HOST/mcp` (Streamable HTTP, stateless). Every request
+must carry the key in **one** of these headers:
 
-```text
-Server URL:   https://files.example.com/mcp
-Header name:  Authorization
-Header value: Bearer YOUR_PRIVATE_AGENT_KEY
+| Header | Use when |
+|---|---|
+| `Authorization: Bearer YOUR_KEY` | Your client lets you set the Authorization header |
+| `X-Auth-Token: YOUR_KEY` | Your client reserves Authorization for OAuth (Claude's connector dialog) |
+
+If an `Authorization` header is present it always wins; `X-Auth-Token` is used
+only without it. Both are redacted from access logs. There is no OAuth.
+
+### Claude (claude.ai, Cowork, Claude Desktop)
+
+1. **Settings → Connectors → Add custom connector** (Team/Enterprise: an owner
+   does this under Admin settings).
+2. Name `fserver`, URL `https://YOUR_HOST/mcp`.
+3. **Authentication: choose "No sign-in".** Claude pre-selects "Sign in now"
+   because the server answers 401 without a key. Leaving that selected makes
+   Claude attempt an OAuth registration that fails with "Couldn't register".
+4. **Request headers → Add header:** name `x-auth-token`, value = the key only
+   (no `Bearer ` prefix). Keep **Required** ticked. Ignore the OAuth client section.
+5. **Add**, then in a chat enable the connector and ask *"list my fserver releases"*.
+6. Recommended: in the connector's tool permissions, set **Delete release** to
+   *ask* — deletion is permanent.
+
+Request headers in this dialog are a Claude feature that may not be enabled for
+every plan. If you don't see the section, this server can't be connected there yet.
+
+### Claude Code
+
+```sh
+claude mcp add --transport http fserver https://YOUR_HOST/mcp \
+  --header "Authorization: Bearer $(cat ~/.config/agent-fileserver/claude.key)"
 ```
 
-If your MCP host reserves `Authorization` for OAuth (for example the Claude
-connector dialog), choose **No sign-in** and send `X-Auth-Token: YOUR_PRIVATE_AGENT_KEY`
-instead. It is used only when no `Authorization` header is present and is redacted
-from access logs.
+### Any other MCP client
 
-Configure once in private connector settings, not in a skill or conversation.
-Every request authenticates; revocation requires no restart. Bearer keys, **not
-OAuth**. No legacy SSE endpoint or downloaded local MCP executable.
+Use a remote **Streamable HTTP** server with URL `https://YOUR_HOST/mcp` and a
+custom header from the table above, stored in the client's secret settings.
+Clients that only support OAuth, legacy SSE or local stdio servers can't connect.
+
+### Rotate or revoke
+
+```sh
+sudo agent-fileserver-token list            # labels, status, expiry; never secrets
+sudo agent-fileserver-token revoke claude   # effective on the next request, no restart
+```
+
+To rotate, create a new label, update the client, then revoke the old one.
+
+## 4. Use it
+
+Just ask your agent, for example:
+
+- *"Build a one-page prototype for X and publish it to fserver."*
+- *"Publish this PDF with password `correct-horse-42`."*
+- *"List my fserver releases"*, *"remove the password from the proposal"*, *"delete the old demo"*.
 
 | Tool | Purpose |
 |---|---|
 | `server_info` | Identity and limits |
-| `list_releases` / `release_info` | Find and inspect releases |
+| `list_releases` / `release_info` | Find and inspect releases (newest 1,000) |
 | `publish_files` | A few UTF-8 or base64 files |
-| `publish_archive` | One base64 ZIP, tar or tar.gz; unpack server-side |
-| `download_release` | Bounded inline download; API fallback for larger files |
-| `delete_release` | Permanently delete the selected release |
-| `set_password` / `reset_password` / `remove_password` | Manage visitor access |
+| `publish_archive` | One base64 ZIP, tar or tar.gz; unpacked server-side |
+| `download_release` | Inline base64 download, up to 1 MiB |
+| `delete_release` | Permanently delete a release |
+| `set_password` / `reset_password` / `remove_password` | Visitor access (username `viewer`) |
 
-Publish once per complete site, not once per asset. Every publish supplies an
-`idempotency_key`; retries must preserve the key and exact payload.
-[MCP examples and client limitations](docs/MCP.md).
-
-The intended workflow is “create site → package output → publish → receive URL.”
-Test a real ZIP from your target agent host before claiming its file-transfer
-integration works; server protocol tests do not prove Cowork attachment support.
-
-## Use the HTTPS client
-
-Python 3.8+ standard library; no pip packages. Save a private `0600` JSON config
-**outside repositories and skills**:
-
-```json
-{"url":"https://files.example.com","token":"YOUR_PRIVATE_AGENT_KEY"}
-```
-
-```sh
-export FSERVER_CONFIG="$HOME/.config/agent-fileserver/client.json"
-python3 client/fpublish.py publish ./dist --label "Prototype"
-python3 client/fpublish.py publish ./Proposal.pdf
-python3 client/fpublish.py publish --unpack-archive ./website.zip
-python3 client/fpublish.py list
-python3 client/fpublish.py info RELEASE_TOKEN
-python3 client/fpublish.py download RELEASE_TOKEN --output ./new-download.tar.gz
-python3 client/fpublish.py delete RELEASE_TOKEN
-```
-
-Normal `publish ./bundle.zip` shares the ZIP **as a file**; `--unpack-archive`
-explicitly publishes its contents. The client hashes every intended original
-public file; it does not compare repacked archive bytes or execute a website.
-Use `--password-stdin`/`FSERVER_PASSWORD`, never password argv. Reset writes a
-fresh private `--secret-output` file, not stdout. `--spa` explicitly enables
-extensionless client routes. Verified TLS and runtime HTTP CONNECT
-`HTTPS_PROXY`/`NO_PROXY` support are retained; no TLS bypasses.
-
-You can also use your own HTTPS implementation: [API contract](docs/API.md).
-Neither interface requires the other client to be installed.
+Every publish needs an `idempotency_key`; retries reuse the same key and exact
+payload. Each publish creates a new URL — nothing is overwritten in place.
+More: [MCP reference](docs/MCP.md).
 
 ## Safety and limits
 
-- URLs are **unlisted public** by default. Anyone can forward them. Optional
-  Basic username **`viewer`** protects the entire release, including assets.
-- Protection exists **before** activation; missing/malformed policies deny
-  access. Agent keys are never visitor passwords.
-- ZIPs support flat sites or one wrapper directory; relative paths stay intact.
-  Without root `index.html`, directory roots intentionally return 404.
-- Static output only: build/export elsewhere. No backend, SSR or uploaded commands.
-- 100 MiB archive/decoded input **and** extracted originals; 5,000 objects
-  including implicit directories; bounded paths/depth/expansion. Archive headers
-  count toward wire limits; MCP adds base64/JSON overhead.
-- Traversal, links, unsafe names, secrets, corrupt/encrypted ZIPs and limit
-  violations fail closed. Only known harmless Mac metadata may be omitted.
-  This is **not content-based secret scanning**.
-- One publisher job, 30 attempts/hour/key, byte/inode reserves, bounded password
-  checks, authentication throttling and request deadlines.
-- Same-host releases share an origin: trust their JavaScript; don't use company
-  production login cookies or treat this as hostile multi-tenant hosting.
-- Deletion is permanent at the origin, not secure erase of caches, downloads,
-  in-flight transfers, logs or backups.
+- URLs are **unlisted but public** by default; anyone with the link can open it.
+  A visitor password protects the whole release, assets included.
+- Static output only — build/export elsewhere. No backend, SSR or uploaded commands.
+- 100 MiB archive and extracted size, 5,000 objects, 30 publishes/hour/key.
+  MCP sends files as base64 inside the request, so your client may hit its own
+  message limits well before 100 MiB.
+- Traversal, links, unsafe names, secrets (`.env`, `.pem`, `.key`, …), scripts
+  and corrupt archives are rejected. This is not content-based secret scanning.
+- All releases on one hostname share a browser origin: only publish JavaScript
+  you trust, and never reuse company production login cookies here.
+- Deletion is permanent at the origin; it can't recall downloads or caches.
+- Services run under systemd memory/CPU/process caps so a flood or leak can't
+  take the host down. See [architecture/security](docs/ARCHITECTURE.md) and [SECURITY.md](SECURITY.md).
 
-Read [architecture/security](docs/ARCHITECTURE.md) and [security reporting](SECURITY.md).
-
-## Verify and maintain
+## Operate
 
 ```sh
-go test -race ./...
-go vet ./...
-python3 -B -m unittest discover -s client -v
-python3 -B -m unittest discover -s tests/installer -p 'test_*.py' -v
-./install.sh --validate-only --base-url https://files.example.com --download-deps
+systemctl status agent-fileserver agent-fileserver-api
+sudo journalctl -u agent-fileserver-api --since today   # MCP operations audit
+sudo tail -F /var/log/agent-fileserver/access.json      # every request, secrets redacted
+git pull && sudo ./install.sh --upgrade --download-deps  # after reviewing the new revision
 ```
 
-[Testing](docs/TESTING.md) covers large requests, installed HTTP/MCP, sandboxes,
-and disposable fresh-host tests. Normal operations:
+Upgrades keep keys, passwords and releases, and refuse hand-edited managed files.
 
-```sh
-sudo agent-fileserver-token list
-sudo agent-fileserver-token revoke claude
-sudo systemctl status agent-fileserver-api agent-fileserver
-sudo journalctl -u agent-fileserver-api --since today
-sudo tail -F /var/log/agent-fileserver/access.json
-# After reviewing/pulling a tested revision:
-sudo ./install.sh --upgrade --download-deps
-```
+## Contributing
 
-Upgrades preserve credentials/data and refuse edited managed files. Maintain
-private backups and dependency/OS security updates. No perpetual-uptime promise.
-
-### Prompt for a deployment agent
-
-> Install `https://github.com/ArtemD/agent-fileserver` on my Ubuntu/Debian server
-> for `https://MY_DOMAIN`. Read README, AGENTS and install/security docs first.
-> Review source, install prerequisites, render/validate, then install. Never
-> overwrite services/data or change DNS/firewall without approval. Create a named
-> key into a private file, never logs/chat/Git. Give me private MCP connection
-> settings and HTTPS-client instructions. Test a tiny site, asset, authentication,
-> passwords, list/download and deletion of only your fixture. Report actual tests
-> and unverified domain/client capabilities.
+Read [AGENTS.md](AGENTS.md) (works for humans and coding agents). Every change
+updates code, tests, docs and CI together; CI enforces this with
+`scripts/check_consistency.py`. Testing details: [docs/TESTING.md](docs/TESTING.md).

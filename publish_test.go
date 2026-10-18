@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -635,77 +634,19 @@ func TestConfiguration(t *testing.T) {
 	}
 }
 
-func TestCLI(t *testing.T) {
+func TestCLIRefusesLocalPublishing(t *testing.T) {
 	root := t.TempDir()
-	t.Cleanup(func() { removeStage(root) })
 	t.Setenv("FSERVER_ROOT", filepath.Join(root, "data"))
 	t.Setenv("FSERVER_BASE_URL", "https://example.test")
 	src := sourceDir(t)
-	single := put(t, src, "a file.pdf", []byte("pdf"))
-	var out, diagnostics bytes.Buffer
-	if e := run([]string{"--json", "--label", "private label", single}, &out, &diagnostics); e != nil {
-		t.Fatal(e)
-	}
-	var m manifest
-	if e := json.Unmarshal(out.Bytes(), &m); e != nil {
-		t.Fatal(e)
-	}
-	if diagnostics.Len() != 0 || m.Label != "private label" || strings.Contains(m.URL, "private") {
-		t.Fatalf("output %s / %s", out.String(), diagnostics.String())
-	}
-	out.Reset()
-	if e := run([]string{"info", m.Token, "--json"}, &out, &diagnostics); e != nil {
-		t.Fatal(e)
-	}
-	var got manifest
-	if e := json.Unmarshal(out.Bytes(), &got); e != nil || got != m {
-		t.Fatalf("%+v %v", got, e)
-	}
-	out.Reset()
-	if e := run([]string{"list", "--json"}, &out, &diagnostics); e != nil {
-		t.Fatal(e)
-	}
-	var all []manifest
-	if e := json.Unmarshal(out.Bytes(), &all); e != nil || len(all) != 1 {
-		t.Fatal(out.String(), e)
-	}
-	out.Reset()
-	if e := run([]string{"unpublish", m.Token}, &out, &diagnostics); e != nil {
-		t.Fatal(e)
-	}
-	if out.String() != m.URL+"\n" {
-		t.Fatal(out.String())
-	}
-	out.Reset()
-	if e := run([]string{"list"}, &out, &diagnostics); e != nil || out.String() != "[]\n" {
-		t.Fatal(out.String(), e)
-	}
-	out.Reset()
-	diagnostics.Reset()
-	if e := run([]string{src}, &out, &diagnostics); e != nil {
-		t.Fatal(e)
-	}
-	if !strings.Contains(diagnostics.String(), "404") || !strings.HasPrefix(out.String(), "https://example.test/") {
-		t.Fatalf("%s / %s", out.String(), diagnostics.String())
-	}
-	out.Reset()
-	if e := run([]string{"--unknown", src}, &out, &diagnostics); e == nil || out.Len() != 0 {
-		t.Fatal("invalid args produced output")
-	}
-}
-
-func TestArgumentParsing(t *testing.T) {
-	for _, args := range [][]string{nil, {"--label"}, {"--spa"}, {"a", "b"}, {"info"}, {"info", "x", "--spa"}, {"list", "x"}, {"--no-validation", "x"}} {
-		if _, e := parseArgs(args); e == nil {
-			t.Errorf("accepted %q", args)
+	put(t, src, "index.html", []byte("<h1>x</h1>"))
+	for _, args := range [][]string{{src}, {"--json", src}, {"list"}, {"info", "AAAAAAAAAAAAAAAAAAAAAA"}, {"unpublish", "AAAAAAAAAAAAAAAAAAAAAA"}, nil} {
+		var out, diagnostics bytes.Buffer
+		if e := run(args, &out, &diagnostics); e == nil || out.Len() != 0 || !strings.Contains(e.Error(), "usage: agent-fileserver token") {
+			t.Fatalf("%q: local publishing must be refused (MCP only), err=%v out=%q", args, e, out.String())
 		}
 	}
-	a, e := parseArgs([]string{"--", "-source"})
-	if e != nil || a.operand != "-source" {
-		t.Fatalf("%+v %v", a, e)
-	}
-	a, e = parseArgs([]string{"source", "--label=a b", "--spa", "--json"})
-	if e != nil || a.label != "a b" || !a.spa || !a.json {
-		t.Fatalf("%+v %v", a, e)
+	if _, e := os.Lstat(filepath.Join(root, "data")); !os.IsNotExist(e) {
+		t.Fatal("refused CLI command touched filesystem state")
 	}
 }

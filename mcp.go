@@ -173,7 +173,7 @@ func (a *apiServer) newMCPHandler() http.Handler {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	server := mcp.NewServer(&mcp.Implementation{Name: "agent-fileserver", Version: buildVersion}, &mcp.ServerOptions{Logger: logger,
 		Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}},
-		Instructions: "Publish clean static files only. Never pass management bearer keys as tool arguments. Publish retries require the same explicit idempotency_key and bytes. Downloads over 1 MiB require the authenticated HTTPS API; this is not a client file-attachment guarantee."})
+		Instructions: "Publish clean static files only. Never pass management bearer keys as tool arguments. Publish retries require the same explicit idempotency_key and bytes. Downloads are inline only, up to 1 MiB; this is not a client file-attachment guarantee."})
 	str := func() map[string]any { return map[string]any{"type": "string"} }
 	token := func() map[string]any { return map[string]any{"type": "string", "pattern": "^[A-Za-z0-9_-]+$"} }
 	publish := func() map[string]any {
@@ -189,12 +189,12 @@ func (a *apiServer) newMCPHandler() http.Handler {
 				return a.mcpCall(ctx, name, req.Params.Arguments), nil
 			})
 	}
-	add("server_info", "Management identity, namespace and REST limits.", mcpSchema(map[string]any{}), true, false, true)
-	add("list_releases", "List releases; bounded output. Use the authenticated REST API if the list exceeds the MCP output limit.", mcpSchema(map[string]any{}), true, false, true)
+	add("server_info", "Management identity, namespace and limits.", mcpSchema(map[string]any{}), true, false, true)
+	add("list_releases", "List releases, newest first; at most the newest 1,000.", mcpSchema(map[string]any{}), true, false, true)
 	for _, name := range []string{"release_info", "download_release", "delete_release", "reset_password", "remove_password"} {
 		description := map[string]string{
 			"release_info":     "Read release metadata and visitor access policy.",
-			"download_release": "Download at most 1 MiB inline as base64; larger releases return an authenticated API URL, never a signed bearer URL.",
+			"download_release": "Download at most 1 MiB inline as base64; larger releases are refused with an error.",
 			"delete_release":   "Permanently delete a release.",
 			"reset_password":   "Replace visitor password with a random password returned once. Treat the returned password as secret.",
 			"remove_password":  "Remove visitor password protection, making the release PUBLIC ON THE INTERNET."}[name]
@@ -202,7 +202,7 @@ func (a *apiServer) newMCPHandler() http.Handler {
 	}
 	add("set_password", "Replace the visitor password. Password is not a management bearer key.", mcpSchema(map[string]any{"token": token(), "password": str()}, "token", "password"), false, true, true)
 	p := publish()
-	p["archive_base64"] = map[string]any{"type": "string", "contentEncoding": "base64", "description": "Standard padded base64 ZIP, tar, or tar.gz archive; decoded limit is min(server limit, 100 MiB). JSON and base64 overhead are bounded. Use REST for streaming."}
+	p["archive_base64"] = map[string]any{"type": "string", "contentEncoding": "base64", "description": "Standard padded base64 ZIP, tar, or tar.gz archive; decoded limit is min(server limit, 100 MiB). JSON and base64 overhead are bounded."}
 	add("publish_archive", "Publish a static ZIP/tar/tar.gz to the PUBLIC INTERNET by default unless a visitor password is supplied. Uses the shared safe publisher. Explicit caller idempotency_key required; reuse exact arguments on retry.", mcpSchema(p, "archive_base64", "idempotency_key"), false, false, true)
 	p = publish()
 	p["files"] = map[string]any{"type": "array", "minItems": 1, "maxItems": min(a.cfg.MaxEntries, mcpMaxFiles), "items": mcpSchema(map[string]any{
@@ -369,7 +369,7 @@ func mcpCheckFields(data []byte, typ reflect.Type) error {
 func mcpResult(value any, failed bool) *mcp.CallToolResult {
 	b, err := json.Marshal(value)
 	if err != nil || len(b) > mcpOutputBytes {
-		b = []byte(`{"error":"MCP output limit exceeded; use the authenticated HTTPS API"}`)
+		b = []byte(`{"error":"MCP output limit exceeded"}`)
 		failed = true
 	}
 	// One JSON text copy only: duplicating inline bytes in structuredContent
@@ -443,7 +443,7 @@ func (a *apiServer) mcpCall(ctx context.Context, name string, raw json.RawMessag
 	return mcpAPIResult(w)
 }
 
-// A ResponseWriter with a strict retention bound, including for streaming REST
+// A ResponseWriter with a strict retention bound, including for streaming release-core
 // downloads. No httptest recorder (which would accumulate unbounded bytes).
 type mcpCapture struct {
 	header   http.Header
@@ -471,7 +471,7 @@ func (w *mcpCapture) Write(p []byte) (int, error) {
 }
 
 func (a *apiServer) mcpDispatch(ctx context.Context, parent *http.Request, method, target string, body io.Reader, contentType, key string, limit int) *mcpCapture {
-	r, _ := http.NewRequestWithContext(ctx, method, target, body)
+	r, _ := http.NewRequestWithContext(context.WithValue(ctx, internalCallKey{}, true), method, target, body)
 	// Copy only the trusted request metadata needed by the API, never transport
 	// session IDs or user-supplied URLs/headers.
 	r.Header.Set("Authorization", "Bearer "+managementKey(parent))
@@ -487,7 +487,7 @@ func (a *apiServer) mcpDispatch(ctx context.Context, parent *http.Request, metho
 
 func mcpAPIResult(w *mcpCapture) *mcp.CallToolResult {
 	if w.overflow {
-		return mcpFailure("MCP output limit exceeded; use the authenticated HTTPS API")
+		return mcpFailure("MCP output limit exceeded")
 	}
 	if w.status == 204 {
 		return mcpResult(map[string]any{"ok": true}, false)
@@ -508,15 +508,13 @@ func (a *apiServer) mcpDownload(ctx context.Context, parent *http.Request, token
 	if json.Unmarshal(info.body.Bytes(), &v) != nil {
 		return mcpFailure("invalid release metadata")
 	}
-	u, _ := url.Parse(a.s.baseURL)
-	fallback := map[string]any{"download_url": u.Scheme + "://" + u.Host + target + "/download", "requires_bearer_auth": true, "inline": false,
-		"message": "Fetch via authenticated HTTPS API; bearer credentials are not included. Inline limit is 1 MiB."}
+	tooLarge := "release download exceeds the 1 MiB inline MCP limit; MCP is the only management interface, so keep your own copy of large artifacts"
 	if v.Bytes > mcpInlineBytes {
-		return mcpResult(fallback, false)
+		return mcpFailure(tooLarge)
 	}
 	w := a.mcpDispatch(ctx, parent, "GET", target+"/download", nil, "", "", mcpInlineBytes)
 	if w.overflow {
-		return mcpResult(fallback, false)
+		return mcpFailure(tooLarge)
 	}
 	if w.status != 200 {
 		return mcpAPIResult(w)
@@ -565,7 +563,7 @@ func (a *apiServer) mcpPublish(ctx context.Context, parent *http.Request, name s
 		artifact = f
 	}
 	// Only the small multipart headers live in memory. Archive base64 is decoded
-	// directly into the REST upload spool, not a second 100 MiB byte slice.
+	// directly into the release-core upload spool, not a second 100 MiB byte slice.
 	var head bytes.Buffer
 	mw := multipart.NewWriter(&head)
 	p, _ := mw.CreateFormField("metadata")

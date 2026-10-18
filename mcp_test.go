@@ -329,18 +329,13 @@ type zeroReader struct{}
 
 func (zeroReader) Read(p []byte) (int, error) { clear(p); return len(p), nil }
 
-func TestMCPDownloadFallbackAndCaptureBound(t *testing.T) {
+func TestMCPDownloadLargeRefusedAndCaptureBound(t *testing.T) {
 	f := testAPI(t)
 	f.a.cfg.MaxExtractBytes = 2 << 20
 	v := publishAPI(t, f, `{}`, tarFixture{"large.pdf", 0, strings.Repeat("x", mcpInlineBytes+1), nil})
-	raw := mcpTool(t, f, "download_release", map[string]any{"token": v.Token}, false)
-	var fallback struct {
-		URL    string `json:"download_url"`
-		Auth   bool   `json:"requires_bearer_auth"`
-		Inline bool   `json:"inline"`
-	}
-	if json.Unmarshal(raw, &fallback) != nil || !fallback.Auth || fallback.Inline || !strings.HasSuffix(fallback.URL, "/"+v.Token+"/download") || strings.Contains(string(raw), f.key) {
-		t.Fatalf("bad fallback %s", raw)
+	raw := string(mcpTool(t, f, "download_release", map[string]any{"token": v.Token}, true))
+	if !strings.Contains(raw, "1 MiB") || strings.Contains(raw, "download_url") || strings.Contains(raw, "/_api/") || strings.Contains(raw, f.key) {
+		t.Fatalf("large download must be refused without any HTTP fallback: %s", raw)
 	}
 	w := &mcpCapture{header: make(http.Header), limit: 8}
 	if _, err := w.Write([]byte("123456789")); err == nil || !w.overflow || w.body.Len() > 8 {
@@ -551,6 +546,9 @@ func TestManagementKeyHeaderAlternatives(t *testing.T) {
 			body = bytes.NewReader(nil)
 		}
 		r := httptest.NewRequest(method, target, body)
+		if target != "/mcp" {
+			r = internal(r)
+		}
 		r.Header.Set("Content-Type", "application/json")
 		r.Header.Set("Accept", "application/json, text/event-stream")
 		r.Header.Set("MCP-Protocol-Version", "2025-06-18")

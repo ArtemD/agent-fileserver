@@ -3,6 +3,8 @@ Description=Authenticated static-release management (private Unix socket)
 After=local-fs.target
 Before=agent-fileserver.service
 RequiresMountsFor=/var/lib/agent-fileserver
+# Keep retrying every RestartSec instead of giving up after a crash burst.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -14,7 +16,7 @@ ExecStart=/usr/local/libexec/agent-fileserver serve --socket /run/agent-fileserv
 ExecStartPost=/usr/bin/curl -q -fs --output /dev/null --max-time 2 --retry 10 --retry-delay 1 --retry-max-time 20 --retry-all-errors --unix-socket /run/agent-fileserver-api/http.sock http://localhost/_internal/health
 TimeoutStartSec=30s
 Restart=on-failure
-RestartSec=2s
+RestartSec=5s
 TimeoutStopSec=20s
 KillMode=control-group
 UMask=0077
@@ -50,7 +52,11 @@ InaccessiblePaths=-/var/lib/agent-fileserver-caddy -/var/log/agent-fileserver
 # A compromised service cannot mint credentials by changing its hash file.
 ReadOnlyPaths=/var/lib/agent-fileserver/credentials
 InaccessiblePaths=-/exe.dev -/etc/ssh -/run/dbus -/run/systemd/private
+# Runaway protection (memory leak, request flood): throttle early, hard-cap
+# late, never swap, and leave CPU headroom for SSH and Caddy.
+MemoryHigh=1280M
 MemoryMax=1536M
+MemorySwapMax=0
 Environment=GOMEMLIMIT=512MiB
 CPUQuota=150%
 TasksMax=96

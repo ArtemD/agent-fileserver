@@ -29,17 +29,20 @@ jobs:
           cache: true
       - name: Native prerequisites
         run: sudo apt-get update && sudo apt-get install -y brotli
-      - name: Go race tests and vet
+      - name: Consistency and public-repo hygiene (docs, tests, CI, limits, secrets)
+        run: python3 scripts/check_consistency.py
+      - name: Go race tests, vet, format and module verification
         run: |
           go test -race ./...
           go vet ./...
           test -z "$(gofmt -l -- *.go)"
-      - name: Python client and installer tests
+          go mod verify
+      - name: Installer tests and installed-test syntax
         env:
           PYTHONDONTWRITEBYTECODE: '1'
         run: |
-          python3 -B -m unittest discover -s client -v
           python3 -B -m unittest discover -s tests/installer -p 'test_*.py' -v
+          PYTHONPYCACHEPREFIX="$(mktemp -d)" python3 -m py_compile scripts/*.py tests/*.py tests/installer/*.py
       - name: Validate direct and proxy configurations without installing
         run: |
           ./install.sh --validate-only --base-url https://files.example.com --download-deps

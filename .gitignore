@@ -1,17 +1,50 @@
+# PUBLIC REPOSITORY. Never commit secrets, private configs, logs, release data
+# or build outputs. scripts/check_consistency.py enforces this in CI.
+
+# Build outputs
+/agent-fileserver
 /bin/
+/rendered/
+/dist/
+*.test
+*.out
+coverage.*
+
+# Runtime state, release data and logs
 /data/
 /run/
-/.env
-/.env.*
-*.log
-__pycache__/
-*.py[cod]
 /test-results/
-/rendered/
+*.log
+*.json.gz
+
+# Secrets and credentials
+.env
+.env.*
+.envrc
 *.pem
 *.key
 *.p12
 *.pfx
+*.kdbx
+*.keystore
+*.secret
+*.token
+id_rsa*
+id_ecdsa*
+id_ed25519*
 credentials.json
 tokens.json
+client.json
 *-private-setup.*
+*.private.*
+
+# Local tool and editor state
+.claude/settings.local.json
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
