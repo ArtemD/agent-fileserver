@@ -474,7 +474,7 @@ func (a *apiServer) mcpDispatch(ctx context.Context, parent *http.Request, metho
 	r, _ := http.NewRequestWithContext(ctx, method, target, body)
 	// Copy only the trusted request metadata needed by the API, never transport
 	// session IDs or user-supplied URLs/headers.
-	r.Header.Set("Authorization", parent.Header.Get("Authorization"))
+	r.Header.Set("Authorization", "Bearer "+managementKey(parent))
 	r.Header.Set("X-Fserver-Client-IP", parent.Header.Get("X-Fserver-Client-IP"))
 	r.Header.Set("Content-Type", contentType)
 	if key != "" {

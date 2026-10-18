@@ -25,6 +25,7 @@ def request(path, method="GET", extra=()):
 request("/robots.txt?" + tag, extra=(
     "-H", "Authorization: Bearer SYNTHETIC_SECRET_NOT_A_REAL_CREDENTIAL",
     "-H", "Cookie: session=SYNTHETIC_COOKIE_NOT_REAL",
+    "-H", "X-Auth-Token: SYNTHETIC_TOKEN_HEADER_NOT_REAL",
     "-H", "Referer: https://example.invalid/logging-probe",
     "-H", "X-Forwarded-For: 203.0.113.99",
 ))
@@ -49,6 +50,8 @@ headers = probe["request"]["headers"]
 assert headers["Referer"] == ["https://example.invalid/logging-probe"]
 assert "SYNTHETIC_SECRET_NOT_A_REAL_CREDENTIAL" not in json.dumps(entries)
 assert "SYNTHETIC_COOKIE_NOT_REAL" not in json.dumps(entries)
+assert "SYNTHETIC_TOKEN_HEADER_NOT_REAL" not in json.dumps(entries)
+assert headers["X-Auth-Token"] in ("REDACTED", ["REDACTED"]), headers.get("X-Auth-Token")
 if BASE.startswith("https://"):
     assert probe["request"]["client_ip"] != "203.0.113.99", "Spoofed XFF trusted"
     if os.environ.get("FSERVER_TEST_TRUSTED_PROXY") == "1":

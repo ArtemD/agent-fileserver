@@ -306,6 +306,25 @@ func requestID() string {
 	}
 	return hex.EncodeToString(b[:])
 }
+
+// managementKey returns the agent key from "Authorization: Bearer KEY" or,
+// only when no Authorization header is present, from "X-Auth-Token: KEY".
+// Some MCP hosts reserve Authorization for OAuth and send static keys in a
+// custom header. Never both: an Authorization header is always authoritative.
+func managementKey(r *http.Request) string {
+	if raw := r.Header.Get("Authorization"); raw != "" {
+		if strings.HasPrefix(raw, "Bearer ") && len(raw) <= 512 && !strings.ContainsAny(raw[7:], " \t\r\n") {
+			return raw[7:]
+		}
+		return ""
+	}
+	raw := r.Header.Get("X-Auth-Token")
+	if raw != "" && len(raw) <= 505 && !strings.ContainsAny(raw, " \t\r\n") {
+		return raw
+	}
+	return ""
+}
+
 func (a *apiServer) ServeHTTP(out http.ResponseWriter, r *http.Request) {
 	w := &apiResponse{ResponseWriter: out}
 	start := time.Now()
@@ -339,11 +358,11 @@ func (a *apiServer) ServeHTTP(out http.ResponseWriter, r *http.Request) {
 	}
 	// Authenticate before inspecting paths or reading any request body.
 	key := "auth:" + clientIP(r)
-	raw := r.Header.Get("Authorization")
+	raw := managementKey(r)
 	var identity agentIdentity
 	var err error
-	if strings.HasPrefix(raw, "Bearer ") && len(raw) <= 512 && !strings.ContainsAny(raw[7:], " \t\r\n") {
-		identity, err = a.tokens.Authenticate(raw[7:], time.Now())
+	if raw != "" {
+		identity, err = a.tokens.Authenticate(raw, time.Now())
 	} else {
 		err = errors.New("invalid authentication")
 	}

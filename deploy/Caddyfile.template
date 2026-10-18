@@ -28,7 +28,11 @@
 			roll_keep 14
 			roll_keep_for 336h
 		}
-		format json
+		# Caddy redacts Authorization/Cookie itself; also hide the alternative key header.
+		format filter {
+			request>headers>X-Auth-Token replace REDACTED
+			wrap json
+		}
 	}
 	header -Server
 	header {

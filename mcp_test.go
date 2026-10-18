@@ -538,3 +538,56 @@ func TestMCPLargeArchive(t *testing.T) {
 	}
 	mcpTool(t, f, "publish_archive", map[string]any{"idempotency_key": requestID(), "archive_base64": base64.StdEncoding.EncodeToString(archive)}, false)
 }
+
+func TestManagementKeyHeaderAlternatives(t *testing.T) {
+	f := testAPI(t)
+	call := func(target string, headers map[string]string) int {
+		var body *bytes.Reader
+		method := "GET"
+		if target == "/mcp" {
+			method = "POST"
+			body = bytes.NewReader([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`))
+		} else {
+			body = bytes.NewReader(nil)
+		}
+		r := httptest.NewRequest(method, target, body)
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("Accept", "application/json, text/event-stream")
+		r.Header.Set("MCP-Protocol-Version", "2025-06-18")
+		for k, v := range headers {
+			r.Header.Set(k, v)
+		}
+		w := httptest.NewRecorder()
+		f.a.ServeHTTP(w, r)
+		return w.Code
+	}
+	for _, tc := range []struct {
+		name    string
+		headers map[string]string
+		status  int
+	}{
+		{"x-auth-token api", map[string]string{"X-Auth-Token": f.key}, 200},
+		{"bearer api", map[string]string{"Authorization": "Bearer " + f.key}, 200},
+		{"authorization wins over x-auth-token", map[string]string{"Authorization": "Basic Zm9vOmJhcg==", "X-Auth-Token": f.key}, 401},
+		{"wrong x-auth-token", map[string]string{"X-Auth-Token": "wrong"}, 401},
+		{"x-auth-token with space", map[string]string{"X-Auth-Token": "Bearer " + f.key}, 401},
+	} {
+		if got := call("/_api/v1/me", tc.headers); got != tc.status {
+			t.Fatalf("%s: status %d, want %d", tc.name, got, tc.status)
+		}
+	}
+	// MCP sub-requests must carry the same credential to the shared API.
+	if got := call("/mcp", map[string]string{"X-Auth-Token": f.key}); got != 200 {
+		t.Fatalf("MCP with X-Auth-Token: status %d", got)
+	}
+	r := httptest.NewRequest("POST", "/mcp", bytes.NewReader([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_releases","arguments":{}}}`)))
+	r.Header.Set("X-Auth-Token", f.key)
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Accept", "application/json, text/event-stream")
+	r.Header.Set("MCP-Protocol-Version", "2025-06-18")
+	w := httptest.NewRecorder()
+	f.a.ServeHTTP(w, r)
+	if w.Code != 200 || strings.Contains(w.Body.String(), `"isError":true`) {
+		t.Fatalf("MCP tool call with X-Auth-Token failed: %d %.500s", w.Code, w.Body)
+	}
+}

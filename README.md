@@ -68,6 +68,11 @@ Header name:  Authorization
 Header value: Bearer YOUR_PRIVATE_AGENT_KEY
 ```
 
+If your MCP host reserves `Authorization` for OAuth (for example the Claude
+connector dialog), choose **No sign-in** and send `X-Auth-Token: YOUR_PRIVATE_AGENT_KEY`
+instead. It is used only when no `Authorization` header is present and is redacted
+from access logs.
+
 Configure once in private connector settings, not in a skill or conversation.
 Every request authenticates; revocation requires no restart. Bearer keys, **not
 OAuth**. No legacy SSE endpoint or downloaded local MCP executable.
