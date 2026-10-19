@@ -72,9 +72,9 @@ services:
     command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile.${FSERVER_MODE:-proxy}", "--adapter", "caddyfile"]
     environment:
       FSERVER_DOMAIN: ${FSERVER_DOMAIN:?set FSERVER_DOMAIN in .env}
-      # Docker's bridge gateway: every connection from the host's published port
-      # arrives from it, so it stands in for the trusted HTTPS frontend.
-      FSERVER_TRUSTED_PROXIES: ${FSERVER_TRUSTED_PROXIES:-172.30.53.1/32}
+      # Docker's bridge gateway (pinned below): every connection from the host's
+      # published port arrives from it, so it stands in for the trusted frontend.
+      FSERVER_TRUSTED_PROXIES: ${FSERVER_EDGE_GATEWAY:-172.30.53.1}/32
     ports:
       - "${FSERVER_LISTEN:-127.0.0.1:8000}:8000"
     networks: [edge]
@@ -96,12 +96,11 @@ services:
 
   # Owner-only key administration: docker compose run --rm admin token list
   admin:
+    <<: *hardened
     profiles: [admin]
+    build: .
     image: agent-fileserver:local
     network_mode: none
-    read_only: true
-    cap_drop: [ALL]
-    security_opt: ["no-new-privileges:true"]
     restart: "no"
     environment: *service-env
     volumes:
@@ -113,9 +112,14 @@ services:
 
 networks:
   edge:
+    # IPv6 lets Docker DNAT published ports for IPv6 clients instead of proxying
+    # them, so Caddy sees their real addresses (rate limits and logs).
+    enable_ipv6: true
     ipam:
       config:
         - subnet: ${FSERVER_EDGE_SUBNET:-172.30.53.0/24}
+          gateway: ${FSERVER_EDGE_GATEWAY:-172.30.53.1}
+        - subnet: ${FSERVER_EDGE_SUBNET6:-fd53:ac1e:3500::/64}
 
 volumes:
   socket:

@@ -150,8 +150,9 @@ More: [MCP reference](docs/MCP.md).
 - All releases on one hostname share a browser origin: only publish JavaScript
   you trust, and never reuse company production login cookies here.
 - Deletion is permanent at the origin; it can't recall downloads or caches.
-- Containers run as non-root with read-only filesystems and no capabilities;
-  the MCP service has no network at all and cannot change keys. See [architecture/security](docs/ARCHITECTURE.md) and [SECURITY.md](SECURITY.md).
+- Containers run as non-root with read-only filesystems and all capabilities
+  dropped (Caddy keeps only the one its official binary needs to start); the
+  MCP service has no network at all and cannot change keys. See [architecture/security](docs/ARCHITECTURE.md) and [SECURITY.md](SECURITY.md).
 
 ## Operate
 

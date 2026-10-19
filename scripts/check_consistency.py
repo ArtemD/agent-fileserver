@@ -32,10 +32,12 @@ def tracked():
 
 # 1. Every MCP tool is documented and covered by tests.
 mcp_source = read("mcp.go")
-tools = re.findall(r'\badd\("([a-z_]+)"', mcp_source)
-for group in re.findall(r"range \[\]string\{([^}]*)\}", mcp_source):
-    tools += re.findall(r'"([a-z_]+)"', group)
-tools = sorted(set(tools))
+# The registered tools, as the server itself reports them (tools/list).
+listing = subprocess.run(["go", "test", "-run", "^TestMCPToolNames$", "-v", "."], cwd=ROOT,
+                         capture_output=True, text=True)
+tools = sorted(set(re.findall(r"\bTOOL (\S+)$", listing.stdout, re.M)))
+if listing.returncode != 0 or not tools:
+    fail("could not list MCP tools via TestMCPToolNames: " + listing.stderr.strip()[-200:])
 if re.search(r"\bREST\b|HTTPS API", mcp_source):
     fail("mcp.go still points agents at a REST/HTTPS API")
 if len(tools) < 5:
@@ -76,7 +78,7 @@ if "request>headers>X-Auth-Token replace REDACTED" not in caddy:
 
 # 4. CI runs every automated check, with actions pinned to full commit SHAs.
 workflow = read(".github/workflows/test.yml")
-for command in ("go test -race ./...", "go vet ./...", "gofmt -l", "go mod verify",
+for command in ("go test -race .", "go vet .", "gofmt -l", "go mod verify",
                 "python3 scripts/check_consistency.py", "py_compile", "sh -n scripts/exe-dev-up.sh",
                 "docker compose config -q", "compose.direct.yaml config -q", "caddy validate",
                 "docker compose up -d --build --wait",

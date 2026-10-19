@@ -1,12 +1,10 @@
 # Direct mode: Caddy obtains and renews certificates for FSERVER_DOMAIN itself.
-# Unprivileged ports inside the container; compose.direct.yaml maps 80/443.
-# No forwarded headers are trusted.
+# It binds 80/443 inside the container (the image's file capability allows it)
+# so redirects and HTTP/3 advertise the real ports. No forwarded headers are trusted.
 {
 	admin off
 	persist_config off
 	storage file_system /data/caddy
-	http_port 8080
-	https_port 8443
 	servers {
 		timeouts {
 			read_header 10s
@@ -18,4 +16,11 @@
 
 {$FSERVER_DOMAIN} {
 	import routes.caddy
+}
+
+# Loopback-only health endpoint, so compose's healthcheck is the same in both modes.
+http://127.0.0.1:8000 {
+	bind 127.0.0.1
+	respond /robots.txt "User-agent: *\nDisallow: /\n" 200
+	respond "Not Found" 404
 }

@@ -149,10 +149,14 @@ class MCPLive(unittest.TestCase):
                     failed = True
                 for token in sorted(cls.releases):
                     try:
+                        # A release the test already deleted is fine; anything
+                        # else that still exists must be deleted successfully.
+                        if cls.request("/" + token + "/", anonymous=True)[0] == 404:
+                            try:
+                                cls.tool("release_info", {"token": token})
+                            except LiveFailure:
+                                continue
                         cls.tool("delete_release", {"token": token})
-                    except LiveFailure:
-                        # Already deleted by the test itself is fine.
-                        pass
                     except Exception:
                         failed = True
         finally:

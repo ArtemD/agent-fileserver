@@ -21,7 +21,8 @@ it in the client's secret connector settings, never a skill, tool arguments or
 the repo. Revocation takes effect on subsequent calls; admitted work may complete.
 
 Clients that require OAuth, persistent sessions, legacy SSE or GET event streams
-without POST/JSON support are not compatible. `/mcp` GET/DELETE return 405.
+without POST/JSON support are not compatible. Unauthenticated requests to `/mcp`
+get 401; authenticated non-POST requests get 405.
 Browser-origin requests require the exact configured HTTPS origin (or no Origin);
 no permissive CORS is installed.
 

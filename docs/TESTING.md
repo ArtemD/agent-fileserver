@@ -7,9 +7,9 @@ never point the live tests at somebody else's server.
 
 ```sh
 python3 scripts/check_consistency.py
-go test -race ./...
-go vet ./... && test -z "$(gofmt -l -- *.go)"
-go mod verify
+go test -race .
+go vet . && test -z "$(gofmt -l -- *.go)"
+go mod verify                              # `.` not `./...`: data/ is a private bind mount
 FSERVER_DOMAIN=files.example.com docker compose config -q
 FSERVER_DOMAIN=files.example.com docker compose -f compose.yaml -f compose.direct.yaml config -q
 ```

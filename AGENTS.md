@@ -17,8 +17,8 @@ service only administers keys (`token create|list|revoke`).
 
 ```sh
 python3 scripts/check_consistency.py      # docs/tests/CI drift, container hardening, repo hygiene
-go test -race ./...
-go vet ./... && test -z "$(gofmt -l -- *.go)"
+go test -race .
+go vet . && test -z "$(gofmt -l -- *.go)"
 go mod verify
 FSERVER_DOMAIN=files.example.com docker compose config -q
 docker compose up -d --build --wait       # needs .env (cp .env.example .env)

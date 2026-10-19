@@ -345,15 +345,23 @@ func TestMCPDownloadLargeRefusedAndCaptureBound(t *testing.T) {
 
 func TestMCPConcurrentAdmissionBeforeRead(t *testing.T) {
 	f := testAPI(t)
+	// Fill both admission pools: the single large slot and every small slot.
 	f.a.mcpAdmission <- struct{}{}
 	defer func() { <-f.a.mcpAdmission }()
+	for range mcpSmallSlots {
+		f.a.mcpSmallAdmission <- struct{}{}
+		defer func() { <-f.a.mcpSmallAdmission }()
+	}
 	var wg sync.WaitGroup
-	for range 16 {
+	for i := range 16 {
 		wg.Go(func() {
 			body := new(mcpUnreadBody)
 			r := httptest.NewRequest("POST", "/mcp", nil)
 			r.Header.Set("Authorization", "Bearer "+f.key)
 			r.Body = body
+			if i%2 == 0 {
+				r.ContentLength = mcpSmallBodyBytes + 1 // large pool
+			}
 			w := httptest.NewRecorder()
 			f.a.ServeHTTP(w, r)
 			if w.Code != 429 || body.reads > 0 {
@@ -587,5 +595,46 @@ func TestManagementKeyHeaderAlternatives(t *testing.T) {
 	f.a.ServeHTTP(w, r)
 	if w.Code != 200 || strings.Contains(w.Body.String(), `"isError":true`) {
 		t.Fatalf("MCP tool call with X-Auth-Token failed: %d %.500s", w.Code, w.Body)
+	}
+}
+
+// TestMCPToolNames prints the registered tools; scripts/check_consistency.py
+// reads them to verify every tool is documented and tested.
+func TestMCPToolNames(t *testing.T) {
+	f := testAPI(t)
+	w := mcpPost(t, f, "tools/list", map[string]any{})
+	var result struct {
+		Result struct {
+			Tools []struct {
+				Name string `json:"name"`
+			} `json:"tools"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil || len(result.Result.Tools) == 0 {
+		t.Fatalf("tools/list: %d %.300s", w.Code, w.Body)
+	}
+	for _, tool := range result.Result.Tools {
+		t.Logf("TOOL %s", tool.Name)
+	}
+}
+
+func TestMCPSmallRequestsAdmittedConcurrently(t *testing.T) {
+	f := testAPI(t)
+	f.a.mcpAdmission <- struct{}{} // a large publish holds the single slot
+	defer func() { <-f.a.mcpAdmission }()
+	for i := 0; i < mcpSmallSlots; i++ {
+		if w := mcpPost(t, f, "tools/list", map[string]any{}); w.Code != 200 {
+			t.Fatalf("small request %d refused while the large slot is busy: %d", i, w.Code)
+		}
+	}
+	// A large body still needs the single slot.
+	body := new(mcpUnreadBody)
+	r := httptest.NewRequest("POST", "/mcp", nil)
+	r.Body, r.ContentLength = body, mcpSmallBodyBytes+1
+	r.Header.Set("Authorization", "Bearer "+f.key)
+	w := httptest.NewRecorder()
+	f.a.ServeHTTP(w, r)
+	if w.Code != 429 || body.reads != 0 {
+		t.Fatalf("large request admitted past the busy slot: %d reads=%d", w.Code, body.reads)
 	}
 }

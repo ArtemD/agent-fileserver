@@ -47,18 +47,19 @@ type apiRate struct {
 	since, timeUsed time.Time
 }
 type apiServer struct {
-	s               *store
-	tokens          *tokenStore
-	cfg             apiConfig
-	incoming, state string
-	job             chan struct{}
-	mu              sync.Mutex
-	rates           map[string]apiRate
-	bcryptJobs      chan struct{}
-	viewerCache     map[[32]byte]time.Time
-	cacheSecret     [32]byte
-	mcpHandler      http.Handler
-	mcpAdmission    chan struct{}
+	s                 *store
+	tokens            *tokenStore
+	cfg               apiConfig
+	incoming, state   string
+	job               chan struct{}
+	mu                sync.Mutex
+	rates             map[string]apiRate
+	bcryptJobs        chan struct{}
+	viewerCache       map[[32]byte]time.Time
+	cacheSecret       [32]byte
+	mcpHandler        http.Handler
+	mcpAdmission      chan struct{}
+	mcpSmallAdmission chan struct{}
 }
 type apiReplay struct {
 	Created      time.Time   `json:"created"`
@@ -116,6 +117,7 @@ func newAPIServer(s *store, tokens *tokenStore, cfg apiConfig) (*apiServer, erro
 		return nil, err
 	}
 	a.mcpAdmission = make(chan struct{}, 1)
+	a.mcpSmallAdmission = make(chan struct{}, mcpSmallSlots)
 	a.mcpHandler = a.newMCPHandler()
 	return a, nil
 }

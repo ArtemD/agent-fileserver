@@ -30,6 +30,8 @@ const (
 	mcpJSONOverhead    = 6 << 20
 	mcpMaxBodyBytes    = 140 << 20
 	mcpInlineBytes     = 1 << 20
+	mcpSmallBodyBytes  = 1 << 20
+	mcpSmallSlots      = 8
 	mcpOutputBytes     = 2 << 20
 	mcpMaxFiles        = 5000
 	mcpMaxJSONItems    = 50000
@@ -57,10 +59,16 @@ func (a *apiServer) serveMCP(w http.ResponseWriter, r *http.Request, id string) 
 		return
 	}
 	// Admission must precede SDK body reads, not just the publishing operation:
-	// JSON parsing may retain several copies of a large base64 argument.
+	// JSON parsing may retain several copies of a large base64 argument. Small
+	// requests (discovery, listing, passwords) share a wider slot so concurrent
+	// agents are not refused; only large bodies take the single slot.
+	admission := a.mcpAdmission
+	if r.ContentLength >= 0 && r.ContentLength <= mcpSmallBodyBytes {
+		admission = a.mcpSmallAdmission
+	}
 	select {
-	case a.mcpAdmission <- struct{}{}:
-		defer func() { <-a.mcpAdmission }()
+	case admission <- struct{}{}:
+		defer func() { <-admission }()
 	default:
 		apiError(w, 429, id, "MCP busy; retry with the same arguments and idempotency key")
 		return
@@ -71,7 +79,11 @@ func (a *apiServer) serveMCP(w http.ResponseWriter, r *http.Request, id string) 
 	}
 	// Do not allow JSON-RPC batches to turn a single admitted POST into an
 	// unbounded fan-out of expensive policy/password operations.
-	r.Body = http.MaxBytesReader(w, r.Body, a.mcpBodyLimit())
+	bodyLimit := a.mcpBodyLimit()
+	if admission == a.mcpSmallAdmission {
+		bodyLimit = mcpSmallBodyBytes
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, bodyLimit)
 	probe := bufio.NewReaderSize(&mcpJSONBudgetReader{r: r.Body}, 4096)
 	for {
 		b, err := probe.Peek(1)

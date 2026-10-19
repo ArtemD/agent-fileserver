@@ -11,7 +11,13 @@ sudo systemctl enable --now docker.service
 
 if [ ! -f .env ]; then
     # exe.dev's documented reflection integration reports this VM's name.
-    name=$(curl -fsS https://reflection.int.exe.xyz/ | python3 -c 'import json,sys; print(json.load(sys.stdin)["name"])')
+    name=$(curl -fsS https://reflection.int.exe.xyz/ | python3 -c 'import json,sys; print(json.load(sys.stdin)["name"])') || name=""
+    case "$name" in
+        *[!a-z0-9-]* | "")
+            echo "Could not determine this VM's name from https://reflection.int.exe.xyz/ (got '$name')." >&2
+            echo "Copy .env.example to .env, set FSERVER_DOMAIN=VMNAME.exe.xyz and re-run." >&2
+            exit 1 ;;
+    esac
     sed -e "s/^FSERVER_DOMAIN=.*/FSERVER_DOMAIN=$name.exe.xyz/" \
         -e "s/^FSERVER_MODE=.*/FSERVER_MODE=proxy/" \
         -e "s/^FSERVER_LISTEN=.*/FSERVER_LISTEN=127.0.0.1:8000/" .env.example > .env
