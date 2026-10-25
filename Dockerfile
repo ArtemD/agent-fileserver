@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # Agent Fileserver MCP service. Caddy runs from the official caddy image; see compose.yaml.
 
-FROM golang:1.27.2-alpine3.24 AS build
+FROM golang:1.27.3-alpine3.24 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download && go mod verify
