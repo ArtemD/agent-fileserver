@@ -442,7 +442,7 @@ func TestAPIInternalAuthorizeCanonicalAndFailClosed(t *testing.T) {
 	if w.Header().Get("X-Fserver-Cache-Control") != "private, no-store" {
 		t.Fatal(w.Header())
 	}
-	for _, uri := range []string{"/" + public.Token + "/../" + protected.Token + "/b.txt", "/" + public.Token + "/%2e%2e/" + protected.Token + "/b.txt", "/" + public.Token + "/%2E%2e%2f" + protected.Token + "/b.txt", "/" + public.Token + "\\..\\" + protected.Token, "//" + public.Token + "/a.txt", "/" + public.Token + "//a.txt", "/" + public.Token + "/.hidden", "https://evil/" + public.Token, "/" + public.Token + "/%zz"} {
+	for _, uri := range []string{"/" + public.Token + "/../" + protected.Token + "/b.txt", "/" + public.Token + "/%2e%2e/" + protected.Token + "/b.txt", "/" + public.Token + "/%2E%2e%2f" + protected.Token + "/b.txt", "/" + public.Token + "\\..\\" + protected.Token, "//" + public.Token + "/a.txt", "/" + public.Token + "//a.txt", "/" + public.Token + "/.hidden", "https://evil/" + public.Token, "/" + public.Token + "/%zz", "/" + public.Token + "/a.txt#x", "/" + public.Token + "#/a.txt", "/" + public.Token + "/a.txt?a=1#x"} {
 		assertAPIStatus(t, check(uri, "", ""), 404)
 	}
 	if e := os.WriteFile(filepath.Join(f.a.s.policies, public.Token+".json"), []byte(`{"protected":false,"password_hash":"malformed"}`), 0600); e != nil {
@@ -495,7 +495,7 @@ func TestAPIInternalAuthorizeIgnoresVisitorQuery(t *testing.T) {
 		if w.Header().Get("X-Fserver-Cache-Control") != "private, no-store" {
 			t.Fatal(q, w.Header())
 		}
-		for _, uri := range []string{"/" + public.Token + "/../" + protected.Token + "/index.html", "/" + public.Token + "/%2e%2e/" + protected.Token + "/index.html", "/" + public.Token + "/%2E%2e%2f" + protected.Token + "/index.html", "/" + public.Token + "//index.html", "/" + public.Token + "/.hidden", "https://evil/" + public.Token, "//" + public.Token + "/index.html"} {
+		for _, uri := range []string{"/" + public.Token + "/../" + protected.Token + "/index.html", "/" + public.Token + "/%2e%2e/" + protected.Token + "/index.html", "/" + public.Token + "/%2E%2e%2f" + protected.Token + "/index.html", "/" + public.Token + "//index.html", "/" + public.Token + "/.hidden", "https://evil/" + public.Token, "//" + public.Token + "/index.html", "/" + public.Token + "/index.html#x"} {
 			assertAPIStatus(t, check(q, uri, "", ""), 404)
 		}
 	}

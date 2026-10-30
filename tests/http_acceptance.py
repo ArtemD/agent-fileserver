@@ -140,6 +140,16 @@ class Acceptance(unittest.TestCase):
                        "../../etc/passwd", "%2e%2e/%2e%2e/etc/passwd"):
             with self.subTest(suffix=suffix):
                 self.assertEqual(self.request(self.spa_path + suffix)[0], 404)
+        # Browsers never send a fragment; a raw '#' is a malformed request target.
+        for target in (self.path + "index.html#x", self.path + "index.html?a=1#x",
+                       self.spa_path + "client/route#x", "/robots.txt#x", "/mcp#x"):
+            with self.subTest(target=target):
+                status, headers, body, _ = self.request("/", "--request-target", target)
+                self.assertEqual((status, body), (400, b"Bad Request"))
+                self.assertEqual(headers["cache-control"], "no-store")
+        # An encoded '#' is an ordinary filename byte, not a fragment.
+        self.assertEqual(self.request(self.spa_path + "client/route%23x")[0], 200)
+        self.assertEqual(self.request(self.path + "index.html%23x")[0], 404)
 
     def test_query_string_is_ignored(self):
         # Links gain ?fbclid=/?utm_*; sites pass state in queries. Lookup is by path.

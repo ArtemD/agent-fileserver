@@ -26,6 +26,12 @@ header {
 }
 
 route {
+	# A raw "#" is never valid in a request target (RFC 9112 3.2); browsers never
+	# send one. Go keeps it as a literal path or query byte, and the forwarded URI
+	# would re-encode it as %23, so reject the malformed request here, on the raw target.
+	@rawfragment expression `{http.request.orig_uri}.contains("#")`
+	respond @rawfragment "Bad Request" 400
+
 	# MCP is the only management interface, authenticated by the isolated Go
 	# service. This route is deliberately before the read-only public-file rules.
 	@management path /mcp

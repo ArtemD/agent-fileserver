@@ -40,7 +40,9 @@ No OAuth account database is needed for this single-owner Bearer-key model.
   It checks the visitor's path exactly as Caddy will serve it and rejects,
   never cleans, ambiguous paths. Query strings are ignored by both the check
   and the file lookup, so `?utm_source=…` or client state cannot change which
-  release or file is authorized.
+  release or file is authorized. A raw `#` in a request target is malformed
+  (browsers never send fragments): Caddy answers `400` before routing, and the
+  check rejects one too. An encoded `%23` is an ordinary filename byte.
 - The Go service runs in its own container as a dedicated unprivileged UID on a
   filesystem Unix socket. No public API TCP port, IP network access, capabilities, owner-home
   access, uploaded code execution, arbitrary URL fetching, or remote shell.

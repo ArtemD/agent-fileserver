@@ -900,13 +900,16 @@ func (a *apiServer) download(w http.ResponseWriter, r *http.Request, id string, 
 // otherwise turn a public release into a password bypass for B. url.ParseRequestURI
 // unescapes exactly once, matching Go's request URL and Caddy's file server.
 // A literal percent (including a literal "%2e") in that decoded path is a real
-// filename, not a request to decode twice.
+// filename, not a request to decode twice. A raw "#" is never valid in a request
+// target (RFC 9112 3.2): Caddy answers 400 before forwarding, and this rejects one
+// that slips through (url.ParseRequestURI would keep it in the path or query).
+// An encoded "%23" is an ordinary filename byte.
 func authorizedURIToken(raw string) (string, bool) {
-	if len(raw) == 0 || len(raw) > 16384 || !strings.HasPrefix(raw, "/") || strings.HasPrefix(raw, "//") || strings.ContainsAny(raw, "\\\r\n\x00") {
+	if len(raw) == 0 || len(raw) > 16384 || !strings.HasPrefix(raw, "/") || strings.HasPrefix(raw, "//") || strings.ContainsAny(raw, "\\\r\n\x00#") {
 		return "", false
 	}
 	u, e := url.ParseRequestURI(raw)
-	if e != nil || u.IsAbs() || u.Host != "" || u.Fragment != "" {
+	if e != nil || u.IsAbs() || u.Host != "" {
 		return "", false
 	}
 	p := u.Path
