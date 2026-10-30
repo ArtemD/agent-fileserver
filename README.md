@@ -142,6 +142,7 @@ More: [MCP reference](docs/MCP.md).
 - URLs are **unlisted but public** by default; anyone with the link can open it.
   A visitor password protects the whole release, assets included.
 - Static output only — build/export elsewhere. No backend, SSR or uploaded commands.
+  Files are served by path; query strings (`?utm_source=…`, page state) are ignored.
 - 100 MiB archive and extracted size, 5,000 objects, 30 publishes/hour/key.
   MCP sends files as base64 inside the request, so your client may hit its own
   message limits well before 100 MiB.

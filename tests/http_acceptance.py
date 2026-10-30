@@ -141,6 +141,33 @@ class Acceptance(unittest.TestCase):
             with self.subTest(suffix=suffix):
                 self.assertEqual(self.request(self.spa_path + suffix)[0], 404)
 
+    def test_query_string_is_ignored(self):
+        # Links gain ?fbclid=/?utm_*; sites pass state in queries. Lookup is by path.
+        for query in ("?", "?a=1", "?fbclid=x&utm_source=y", "?p=..%2F..%2Fx",
+                      "?/../" + self.spa["token"] + "/"):
+            with self.subTest(query=query):
+                status, headers, body, _ = self.request(self.path + "index.html" + query)
+                self.assertEqual(status, 200)
+                self.assertIn(b"Static server works", body)
+                self.assertEqual(headers["cache-control"], "public, max-age=3600")
+                self.assertEqual(self.request(self.path + query)[0], 200)
+                self.assertEqual(self.request(self.spa_path + "client/route" + query)[0], 200)
+                status, headers, body, _ = self.request(
+                    self.path + "app.js" + query, "-H", "Accept-Encoding: gzip")
+                self.assertEqual(status, 200)
+                self.assertEqual(headers["content-encoding"], "gzip")
+                self.assertEqual(gzip.decompress(body), self.js)
+                for path in (self.path + "missing.js", self.spa_path + "missing.js",
+                             self.path + "client/route", self.path + "empty/",
+                             self.spa_path + ".fserver-spa", self.path + "key.pem",
+                             "/_internal/authorize", "/_api/v1/me"):
+                    status, headers, body, _ = self.request(path + query)
+                    self.assertEqual((status, body), (404, b"Not Found"), path)
+                    self.assertEqual(headers["cache-control"], "no-store")
+                traversal = self.path + "../" + self.spa["token"] + "/index.html"
+                self.assertEqual(self.request(traversal + query)[0], 404)
+        self.assertEqual(self.request(self.path + "index.html%3Fa=1")[0], 404)
+
     def test_gzip_precompressed(self):
         status, headers, body, _ = self.request(
             self.path + "app.js", "-H", "Accept-Encoding: gzip")

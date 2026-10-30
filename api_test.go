@@ -454,6 +454,60 @@ func TestAPIInternalAuthorizeCanonicalAndFailClosed(t *testing.T) {
 	}
 	assertAPIStatus(t, check("/"+protected.Token+"/b.txt", "viewer", "privatePassword"), 404)
 }
+
+// Caddy's forward_auth carries the visitor's query (even a bare "?") onto
+// /_internal/authorize. It must neither break nor change the authorized URI.
+func TestAPIInternalAuthorizeIgnoresVisitorQuery(t *testing.T) {
+	f := testAPI(t)
+	public := publishAPI(t, f, `{}`, tarFixture{"index.html", 0, "public", nil})
+	protected := publishAPI(t, f, `{"password":"privatePassword"}`, tarFixture{"index.html", 0, "private", nil})
+	check := func(query, uri, user, pwd string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("GET", "/_internal/authorize"+query, nil)
+		if (query == "?") != r.URL.ForceQuery {
+			t.Fatalf("request %q: ForceQuery=%v", query, r.URL.ForceQuery)
+		}
+		r.Header.Set("X-Forwarded-Uri", uri+query)
+		r.Header.Set("X-Fserver-Client-IP", "192.0.2.98")
+		if user != "" {
+			r.SetBasicAuth(user, pwd)
+		}
+		w := httptest.NewRecorder()
+		f.a.ServeHTTP(w, r)
+		return w
+	}
+	queries := []string{"", "?", "?a=1", "?fbclid=x&utm_source=y", "?p=..%2F..%2F" + protected.Token + "%2Findex.html", "?/../" + protected.Token + "/index.html", "?%2e%2e/%2e%2e/etc/passwd"}
+	for _, q := range queries {
+		w := check(q, "/"+public.Token+"/index.html", "", "")
+		assertAPIStatus(t, w, 204)
+		if w.Header().Get("X-Fserver-Cache-Control") != "public, max-age=3600" {
+			t.Fatal(q, w.Header())
+		}
+		if token, ok := authorizedURIToken("/" + public.Token + "/index.html" + q); !ok || token != public.Token {
+			t.Fatalf("query %q changed the authorized token", q)
+		}
+		w = check(q, "/"+protected.Token+"/index.html", "", "")
+		assertAPIStatus(t, w, 401)
+		if !strings.Contains(w.Header().Get("WWW-Authenticate"), protected.Token) {
+			t.Fatal(q, w.Header())
+		}
+		w = check(q, "/"+protected.Token+"/index.html", "viewer", "privatePassword")
+		assertAPIStatus(t, w, 204)
+		if w.Header().Get("X-Fserver-Cache-Control") != "private, no-store" {
+			t.Fatal(q, w.Header())
+		}
+		for _, uri := range []string{"/" + public.Token + "/../" + protected.Token + "/index.html", "/" + public.Token + "/%2e%2e/" + protected.Token + "/index.html", "/" + public.Token + "/%2E%2e%2f" + protected.Token + "/index.html", "/" + public.Token + "//index.html", "/" + public.Token + "/.hidden", "https://evil/" + public.Token, "//" + public.Token + "/index.html"} {
+			assertAPIStatus(t, check(q, uri, "", ""), 404)
+		}
+	}
+	// Only the authorize hop ignores its query; its path stays canonical.
+	for _, target := range []string{"/_internal/%61uthorize?a=1", "/_internal/authorize/?a=1", "/_internal//authorize?a=1", "/_internal/health?a=1", "/_internal/health?"} {
+		r := httptest.NewRequest("GET", target, nil)
+		r.Header.Set("X-Forwarded-Uri", "/"+public.Token+"/index.html")
+		w := httptest.NewRecorder()
+		f.a.ServeHTTP(w, r)
+		assertAPIStatus(t, w, 404)
+	}
+}
 func TestAPICleanupOnlyOwnedStaleFilesAndReplayExpiry(t *testing.T) {
 	f := testAPI(t)
 	keep := put(t, f.a.incoming, "user-owned/data", []byte("keep"))
@@ -733,7 +787,7 @@ func TestAPIDiskAvailableBytesAndInodes(t *testing.T) {
 
 func TestPublicHTTPOnlyServesMCP(t *testing.T) {
 	f := testAPI(t)
-	for _, target := range []string{"/_api/v1/me", "/_api/v1/releases", "/_api/v1/releases/AAAAAAAAAAAAAAAAAAAAAA", "/", "/mcp/", "/api"} {
+	for _, target := range []string{"/_api/v1/me", "/_api/v1/releases", "/_api/v1/releases/AAAAAAAAAAAAAAAAAAAAAA", "/", "/mcp/", "/mcp?a=1", "/mcp?", "/api"} {
 		for _, method := range []string{"GET", "POST", "DELETE"} {
 			r := httptest.NewRequest(method, target, nil)
 			r.Header.Set("Authorization", "Bearer "+f.key)

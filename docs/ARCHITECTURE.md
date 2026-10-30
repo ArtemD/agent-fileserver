@@ -37,6 +37,10 @@ No OAuth account database is needed for this single-owner Bearer-key model.
 - Caddy (official `caddy` image) serves static bytes and terminates HTTPS, or
   sits behind an explicitly configured trusted HTTPS proxy. It cannot read private metadata or write
   published content. A private authorization subrequest gates every release.
+  It checks the visitor's path exactly as Caddy will serve it and rejects,
+  never cleans, ambiguous paths. Query strings are ignored by both the check
+  and the file lookup, so `?utm_source=…` or client state cannot change which
+  release or file is authorized.
 - The Go service runs in its own container as a dedicated unprivileged UID on a
   filesystem Unix socket. No public API TCP port, IP network access, capabilities, owner-home
   access, uploaded code execution, arbitrary URL fetching, or remote shell.

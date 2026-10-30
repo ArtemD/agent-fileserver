@@ -57,8 +57,10 @@ key. Shared helper: `tests/mcp_fixture.py`.
   read-only, both are healthy and restart automatically. `FSERVER_TEST_COMPOSE`
   overrides the compose command (for example `docker compose -p NAME`).
 - `http_acceptance.py` checks static MIME, compression, caching/ranges, SPA/404,
-  denial behaviour and immutable publish/delete.
+  denial behaviour, that release URLs ignore query strings, and immutable
+  publish/delete.
 - `mcp_live.py` exercises every tool through Caddy with both key headers,
+  visitor passwords with and without a query string,
   revocation, and that no non-MCP management route is reachable. With
   `FSERVER_TEST_LARGE=1` it also streams a 100 MiB archive as base64 JSON and
   checks that its download is refused (inline limit 1 MiB).

@@ -365,6 +365,10 @@ class MCPLive(unittest.TestCase):
         check(self.request("/" + token + "/assets/style.css", anonymous=True)[0] == 401,
               "protected assets unexpectedly public")
         self.public_bytes(token, "assets/style.css", CSS, password=password)
+        for query in ("?", "?fbclid=x&utm_source=y", "?p=..%2F..%2Findex.html"):
+            check(self.request("/" + token + "/index.html" + query, anonymous=True)[0] == 401,
+                  "query string bypassed or broke visitor authentication")
+            self.public_bytes(token, "index.html" + query, HTML, password=password)
         reset = self.tool("reset_password", {"token": token})
         replacement = reset.get("password")
         check(isinstance(replacement, str) and 8 <= len(replacement.encode()) <= 72,

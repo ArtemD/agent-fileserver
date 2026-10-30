@@ -359,7 +359,10 @@ func (a *apiServer) ServeHTTP(out http.ResponseWriter, r *http.Request) {
 		apiJSON(w, 200, map[string]string{"status": "ok"})
 		return
 	}
-	if r.URL.Path == "/_internal/authorize" && canonicalAPIPath(r) {
+	// forward_auth keeps the visitor's query on this rewritten URI: Caddy's
+	// rewrite replaces a query only when `uri` sets one, and never clears a bare
+	// "?". The visitor URI is read only from X-Forwarded-Uri, so ignore it here.
+	if r.URL.Path == "/_internal/authorize" && canonicalPath(r) {
 		operation = "authorize"
 		a.authorize(w, r, id)
 		return
@@ -508,7 +511,10 @@ func (a *apiServer) ServeHTTP(out http.ResponseWriter, r *http.Request) {
 	}
 }
 func canonicalAPIPath(r *http.Request) bool {
-	return r.URL.RawQuery == "" && !r.URL.ForceQuery && r.URL.RawPath == "" && r.URL.EscapedPath() == r.URL.Path && path.Clean(r.URL.Path) == r.URL.Path && !strings.Contains(r.URL.Path, "\\")
+	return r.URL.RawQuery == "" && !r.URL.ForceQuery && canonicalPath(r)
+}
+func canonicalPath(r *http.Request) bool {
+	return r.URL.RawPath == "" && r.URL.EscapedPath() == r.URL.Path && path.Clean(r.URL.Path) == r.URL.Path && !strings.Contains(r.URL.Path, "\\")
 }
 func methodError(w http.ResponseWriter, id, allow string) {
 	w.Header().Set("Allow", allow)
