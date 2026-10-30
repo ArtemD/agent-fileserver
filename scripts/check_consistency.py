@@ -83,7 +83,7 @@ for command in ("go test -race .", "go vet .", "gofmt -l", "go mod verify",
                 "docker compose config -q", "compose.direct.yaml config -q", "caddy validate",
                 "docker compose up -d --build --wait",
                 "scripts/check_commits.py --self-test", "scripts/check_commits.py --verify-issues",
-                ".githooks/commit-msg .githooks/pre-push",
+                ".githooks/commit-msg .githooks/pre-push", "rhysd/actionlint:",
                 *("tests/" + Path(p).name for p in tracked()
                   if p.startswith("tests/") and p.endswith(".py") and p not in helpers)):
     if command not in workflow:
@@ -99,6 +99,9 @@ for needed, why in (("security.yml", "govulncheck@v"), ("security.yml", "codeql-
                     ("release.yml", "uses: ./.github/workflows/test.yml")):
     if why not in read(".github/workflows/" + needed):
         fail(f".github/workflows/{needed} must run {why}")
+for path in workflows:
+    if re.search(r"cancel-in-progress:\s*true", read(path)):
+        fail(f"{path} must not cancel runs on main: use cancel-in-progress only for pull requests")
 if "workflow_call:" not in workflow:
     fail("test.yml must be reusable (workflow_call) so releases run the same checks")
 

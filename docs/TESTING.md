@@ -87,10 +87,12 @@ never use `-k`.
 ## CI
 
 `.github/workflows/test.yml` (push to `main`, pull requests, and called by
-releases) runs a **commits** job (`check_commits.py` on the pushed range), the
+releases) runs a **workflows** job (actionlint, with shellcheck on `run:` blocks),
+a **commits** job (`check_commits.py` on the pushed range), the
 unit/static checks on Go 1.26 and 1.27, then an **integration** job that builds
 and starts the real compose stack and runs every live test above against it,
-including the 100 MiB MCP upload.
+including the 100 MiB MCP upload. Superseded pull-request runs are cancelled;
+runs for commits on `main` and for tags always finish.
 
 `.github/workflows/security.yml` runs on push, pull requests and weekly:
 `govulncheck` against the Go version of the Dockerfile build image, and CodeQL

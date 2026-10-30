@@ -45,7 +45,7 @@ themselves. Details: docs/TESTING.md.
 | `scripts/check_consistency.py` | CI guard for drift, hardening, forbidden files and doc links |
 | `scripts/check_commits.py` | Commit guard: issue link, message format, noreply emails, docs in sync |
 | `.githooks/` | `commit-msg` and `pre-push` hooks that run `check_commits.py` |
-| `.github/workflows/` | `test.yml` (commits, unit, live stack), `security.yml` (govulncheck, CodeQL, weekly), `release.yml` (tag → tests → GitHub release) |
+| `.github/workflows/` | `test.yml` (actionlint, commits, unit, live stack), `security.yml` (govulncheck, CodeQL, weekly), `release.yml` (tag → tests → GitHub release) |
 | `.github/ISSUE_TEMPLATE/` | Bug and change issue forms; vulnerabilities go to private advisories |
 | `main.go`, `cli_management.go` | Key admin CLI, `serve`, `healthcheck`, stale-socket recovery |
 | `mcp.go` | MCP tools; the only management surface |
