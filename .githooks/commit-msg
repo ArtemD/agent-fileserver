@@ -1,0 +1,4 @@
+#!/bin/sh
+# Reject a commit whose message lacks an issue link or good form (AGENTS.md "Git").
+# Enable once per clone: git config core.hooksPath .githooks
+exec python3 scripts/check_commits.py --message-file "$1"

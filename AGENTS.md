@@ -16,7 +16,9 @@ service only administers keys (`token create|list|revoke`).
 ## Commands
 
 ```sh
+git config core.hooksPath .githooks       # once per clone: commit-msg and pre-push checks
 python3 scripts/check_consistency.py      # docs/tests/CI drift, container hardening, repo hygiene
+python3 scripts/check_commits.py --verify-issues -- origin/main..HEAD   # what pre-push and CI run
 go test -race .
 go vet . && test -z "$(gofmt -l -- *.go)"
 go mod verify
@@ -40,7 +42,11 @@ themselves. Details: docs/TESTING.md.
 | `Dockerfile` | Go service image (UID 10001); Caddy uses the official image |
 | `deploy/caddy/` | `Caddyfile.proxy`, `Caddyfile.direct`, shared `routes.caddy` |
 | `scripts/exe-dev-up.sh` | One-shot setup on an exe.dev VM |
-| `scripts/check_consistency.py` | CI guard for drift, hardening and forbidden files |
+| `scripts/check_consistency.py` | CI guard for drift, hardening, forbidden files and doc links |
+| `scripts/check_commits.py` | Commit guard: issue link, message format, noreply emails, docs in sync |
+| `.githooks/` | `commit-msg` and `pre-push` hooks that run `check_commits.py` |
+| `.github/workflows/` | `test.yml` (commits, unit, live stack), `security.yml` (govulncheck, CodeQL, weekly), `release.yml` (tag → tests → GitHub release) |
+| `.github/ISSUE_TEMPLATE/` | Bug and change issue forms; vulnerabilities go to private advisories |
 | `main.go`, `cli_management.go` | Key admin CLI, `serve`, `healthcheck`, stale-socket recovery |
 | `mcp.go` | MCP tools; the only management surface |
 | `api.go` | Auth, rate limits, in-process release core, Caddy `forward_auth` endpoint |
@@ -52,16 +58,25 @@ themselves. Details: docs/TESTING.md.
 
 A change is not finished until **all** of these are updated in the same commit:
 
+0. **An issue.** Every change has a GitHub issue made from a form in
+   `.github/ISSUE_TEMPLATE/`, opened before the work, and the commit closes it.
 1. **Code and tests together.** New or changed behaviour gets Go tests, and a
    live test in `tests/` when it is observable over HTTP/MCP or in the
    containers. Removed behaviour removes its tests and adds a test that it is gone.
-2. **Docs.** README (user-facing, including install and how to connect and
-   authenticate), `docs/MCP.md` (tools, arguments, limits), `docs/ARCHITECTURE.md`
-   (security model), `docs/INSTALL.md` (operations), `docs/TESTING.md` (how to
-   run every test). Keep this file accurate too.
+2. **Docs, always in the same commit.** README (user-facing, including install
+   and how to connect and authenticate), `docs/MCP.md` (tools, arguments, limits),
+   `docs/ARCHITECTURE.md` (security model), `docs/INSTALL.md` (operations),
+   `docs/TESTING.md` (how to run every test). Keep this file accurate too: a new
+   script, hook or workflow gets a row in Layout. `check_commits.py` rejects a
+   commit that changes code, deployment, scripts or CI without touching docs,
+   unless it says why on its own line: `Docs: unchanged, <reason>` (a pure
+   refactor, a test-only fix). Before committing, reread the docs the change
+   touches and fix anything that is now wrong, not only what is missing.
 3. **CI/CD.** `.github/workflows/test.yml` runs every automated check and every
-   live test against the real compose stack; add new ones there. Pin actions to
-   full commit SHAs and images to exact versions.
+   live test against the real compose stack; add new ones there. `security.yml`
+   scans dependencies and code; `release.yml` publishes a `vX.Y.Z` tag only after
+   `test.yml` passes. Pin actions to full commit SHAs and images to exact versions;
+   every workflow has a README badge.
 4. **Deployment.** Compose, Dockerfile and Caddy changes keep both modes valid
    (`docker compose config`, `caddy validate`) and keep the hardening that
    `check_consistency.py` and `tests/container_sandbox.py` assert.
@@ -105,8 +120,38 @@ set `FSERVER_DOMAIN` and `FSERVER_MODE`, then `docker compose up -d --build --wa
 file, never into chat, logs or the repository (see README "Create an agent key").
 Verify with `python3 tests/mcp_live.py`.
 
-## Git
+## Git: every change has an issue
 
-- Small, focused commits with a body explaining why. Run all checks first.
+Working alone, there are no pull requests: commits go to `main`, and the issue
+plus the commit are the record of why. Pull requests are optional, for a large or
+risky agent change the owner wants to review first.
+
+1. **Open the issue first** with the bug or change form (web), or with
+   `gh issue create --label bug|enhancement --title "…" --body-file FILE`, where
+   FILE has the form's `### Heading` sections (CI checks the required ones):
+   - bug: Summary, Impact, Steps to reproduce, Expected behaviour, Actual behaviour,
+     Version (then Root cause, Fix and verification once known);
+   - change: Problem, Proposed change, Security and boundary impact, Acceptance
+     criteria (and Alternatives considered).
+
+   Write for a stranger and an agent: exact commands, status codes, file:line
+   references, what was ruled out. **Public and permanent:** placeholders
+   (`files.example.com`, `<token>`), never keys, passwords, release URLs, private
+   hostnames, IPs or personal data. Vulnerabilities go to a private advisory
+   (SECURITY.md); reference it as `Refs GHSA-…`.
+2. **Commit** small and focused. Subject: imperative, capitalised, at most 72
+   characters, no period. Blank line, then a body wrapped at 72 that explains why,
+   what was rejected and how it was verified. Last, on its own line, `Fixes #N`
+   (the commit that completes the issue; it closes on push to `main`) or `Refs #N`
+   (earlier commits). Author and committer emails must be GitHub noreply
+   addresses: `git config user.email ID+LOGIN@users.noreply.github.com`.
+3. **Update the issue** if the root cause or decision changed while working, so
+   the issue and the commit tell the same story.
+4. **Push.** `pre-push` re-checks the commits and that each issue exists and fills
+   its form; CI checks the pushed range again. Merge and Dependabot commits are exempt.
+5. **Release** when the owner asks: `git tag -a vX.Y.Z -m "…" && git push origin vX.Y.Z`.
+
+Also:
+- Run all checks first.
 - `git status` before committing: only intended source, doc and test files.
 - CI must be green on `main`.

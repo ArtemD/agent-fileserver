@@ -2,8 +2,10 @@
 
 Do not open a public issue containing credentials, protected release URLs,
 private files, request bodies, backups or log excerpts with personal data.
-Use the repository's private vulnerability reporting channel if it is enabled;
-otherwise contact the maintainer privately before publishing exploit details.
+Report vulnerabilities privately at
+https://github.com/ArtemD/agent-fileserver/security/advisories/new and wait for a
+fix before publishing exploit details. The fix commit references the advisory
+(`Refs GHSA-…`) instead of a public issue.
 
 Review [the security model](docs/ARCHITECTURE.md) before installation. A leaked
 agent key manages every release on its instance. Revoke it locally, provision a

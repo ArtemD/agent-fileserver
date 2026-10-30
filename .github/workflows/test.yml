@@ -4,6 +4,7 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  workflow_call: # release.yml runs the same checks before publishing a tag
 
 permissions:
   contents: read
@@ -13,6 +14,30 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  commits:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Every new commit links a templated issue, is well-formed and keeps docs in sync
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BEFORE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          AFTER: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          python3 scripts/check_commits.py --self-test
+          if git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            python3 scripts/check_commits.py --verify-issues -- "$BEFORE..$AFTER"
+          else
+            python3 scripts/check_commits.py --verify-issues -- -1 "$AFTER"
+          fi
+
   unit:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -40,7 +65,7 @@ jobs:
       - name: Script syntax
         run: |
           PYTHONPYCACHEPREFIX="$(mktemp -d)" python3 -m py_compile scripts/*.py tests/*.py
-          sh -n scripts/exe-dev-up.sh
+          sh -n scripts/exe-dev-up.sh .githooks/commit-msg .githooks/pre-push
       - name: Validate compose files and Caddy configs (proxy and direct)
         env:
           FSERVER_DOMAIN: files.example.com

@@ -1,5 +1,12 @@
 # Agent Fileserver
 
+[![Tests](https://github.com/ArtemD/agent-fileserver/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/ArtemD/agent-fileserver/actions/workflows/test.yml)
+[![Security](https://github.com/ArtemD/agent-fileserver/actions/workflows/security.yml/badge.svg?branch=main)](https://github.com/ArtemD/agent-fileserver/actions/workflows/security.yml)
+[![Release](https://github.com/ArtemD/agent-fileserver/actions/workflows/release.yml/badge.svg)](https://github.com/ArtemD/agent-fileserver/actions/workflows/release.yml)
+[![Latest release](https://img.shields.io/github/v/release/ArtemD/agent-fileserver?sort=semver&display_name=tag)](https://github.com/ArtemD/agent-fileserver/releases)
+[![Go](https://img.shields.io/github/go-mod/go-version/ArtemD/agent-fileserver)](go.mod)
+[![License: MIT](https://img.shields.io/github/license/ArtemD/agent-fileserver)](LICENSE)
+
 Let your AI agents publish static websites, prototypes, PDFs and files to your
 own server over **remote MCP**, and get back a fresh, unguessable URL to share.
 
@@ -169,5 +176,9 @@ Upgrades keep keys, passwords and releases (they live in `./data`).
 ## Contributing
 
 Read [AGENTS.md](AGENTS.md) (works for humans and coding agents). Every change
-updates code, tests, docs and CI together; CI enforces this with
-`scripts/check_consistency.py`. Testing details: [docs/TESTING.md](docs/TESTING.md).
+starts with an issue (bug or change form) and its commit says `Fixes #N`, so the
+history keeps the problem, decision and evidence behind each change. Every change
+updates code, tests, docs and CI together. Hooks (`git config core.hooksPath
+.githooks`) and CI enforce this with `scripts/check_commits.py` and
+`scripts/check_consistency.py`. Report vulnerabilities privately through
+[SECURITY.md](SECURITY.md). Testing details: [docs/TESTING.md](docs/TESTING.md).

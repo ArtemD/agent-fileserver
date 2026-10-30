@@ -7,6 +7,8 @@ never point the live tests at somebody else's server.
 
 ```sh
 python3 scripts/check_consistency.py
+python3 scripts/check_commits.py --self-test
+python3 scripts/check_commits.py --verify-issues -- origin/main..HEAD
 go test -race .
 go vet . && test -z "$(gofmt -l -- *.go)"
 go mod verify                              # `.` not `./...`: data/ is a private bind mount
@@ -19,7 +21,16 @@ FSERVER_DOMAIN=files.example.com docker compose -f compose.yaml -f compose.direc
 interfaces still mentioned, unpinned actions or images) or when the compose
 hardening weakens (API network, read-only keys, non-root users, read-only root
 filesystems, capabilities, restart policy). It also fails if a secret, binary,
-large file or git-ignored file is tracked.
+large file or git-ignored file is tracked, a workflow lacks a README badge, a
+script, hook or workflow is not described in AGENTS.md, or a Markdown link points
+to a missing file.
+
+`scripts/check_commits.py` checks commits rather than files: each references an
+issue (`Fixes #N`/`Refs #N`), has a well-formed message and GitHub noreply emails,
+and changes docs whenever it changes code, deployment, scripts or CI (or says
+`Docs: unchanged, <reason>`). With `--verify-issues` it also asks GitHub that each
+issue exists and fills a form's required fields. The `commit-msg` and `pre-push`
+hooks in `.githooks/` run it locally; `--self-test` covers its rules.
 
 Go tests cover safe publication, policies/credentials, replay/recovery,
 tar/ZIP traversal/type/CRC/limits, admission/privacy, stale-socket recovery and
@@ -75,9 +86,20 @@ never use `-k`.
 
 ## CI
 
-`.github/workflows/test.yml` runs the unit/static checks on Go 1.26 and 1.27,
-then an **integration** job that builds and starts the real compose stack and
-runs every live test above against it, including the 100 MiB MCP upload.
+`.github/workflows/test.yml` (push to `main`, pull requests, and called by
+releases) runs a **commits** job (`check_commits.py` on the pushed range), the
+unit/static checks on Go 1.26 and 1.27, then an **integration** job that builds
+and starts the real compose stack and runs every live test above against it,
+including the 100 MiB MCP upload.
+
+`.github/workflows/security.yml` runs on push, pull requests and weekly:
+`govulncheck` against the Go version of the Dockerfile build image, and CodeQL
+for Go, Python and the workflows themselves.
+
+`.github/workflows/release.yml` runs on a `vX.Y.Z` tag: it calls `test.yml`, and
+only if that passes publishes a GitHub release listing the commits and the issues
+they closed. Deployment stays a manual `git checkout vX.Y.Z` on the server
+(docs/INSTALL.md); CI never connects to a server.
 
 ## What still needs a real environment
 

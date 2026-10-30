@@ -112,9 +112,13 @@ sudo tail -F logs/access.json             # every request, keys redacted
 ## Upgrades
 
 ```sh
-git pull                                  # review the new revision first
+git fetch --tags                          # review the release notes first
+git checkout vX.Y.Z                       # a tested release, or `git pull` for main
 docker compose up -d --build --wait
 ```
+
+Releases are published only after the full test suite passes on the tag; each
+lists its commits and the issues they closed.
 
 Data, keys and passwords live in the data directory and survive rebuilds.
 

@@ -82,13 +82,25 @@ for command in ("go test -race .", "go vet .", "gofmt -l", "go mod verify",
                 "python3 scripts/check_consistency.py", "py_compile", "sh -n scripts/exe-dev-up.sh",
                 "docker compose config -q", "compose.direct.yaml config -q", "caddy validate",
                 "docker compose up -d --build --wait",
+                "scripts/check_commits.py --self-test", "scripts/check_commits.py --verify-issues",
+                ".githooks/commit-msg .githooks/pre-push",
                 *("tests/" + Path(p).name for p in tracked()
                   if p.startswith("tests/") and p.endswith(".py") and p not in helpers)):
     if command not in workflow:
         fail(f"CI workflow does not run: {command}")
-for use in re.findall(r"uses:\s*([^\s#]+)", workflow):
-    if not re.fullmatch(r"[\w.-]+/[\w.-]+@[0-9a-f]{40}", use):
-        fail(f"CI action is not pinned to a full commit SHA: {use}")
+workflows = [p for p in tracked() if p.startswith(".github/workflows/") and p.endswith(".yml")]
+for path in workflows:
+    for use in re.findall(r"uses:\s*([^\s#]+)", read(path)):
+        if use.startswith("./.github/workflows/"):
+            continue
+        if not re.fullmatch(r"[\w.-]+/[\w./-]+@[0-9a-f]{40}", use):
+            fail(f"{path}: action is not pinned to a full commit SHA: {use}")
+for needed, why in (("security.yml", "govulncheck@v"), ("security.yml", "codeql-action/analyze"),
+                    ("release.yml", "uses: ./.github/workflows/test.yml")):
+    if why not in read(".github/workflows/" + needed):
+        fail(f".github/workflows/{needed} must run {why}")
+if "workflow_call:" not in workflow:
+    fail("test.yml must be reusable (workflow_call) so releases run the same checks")
 
 # 5. Container hardening and pinned images (from compose's own rendered config).
 env = dict(os.environ, FSERVER_DOMAIN="files.example.com")
@@ -136,7 +148,40 @@ for needed in ("data", "logs", ".env", ".git"):
 if 'USER 10001:10001' not in read("Dockerfile"):
     fail("Dockerfile must run the service as the dedicated non-root UID 10001")
 
-# 6. Public-repo hygiene: no secrets, credentials, binaries or large files.
+# 6. Every change has an issue, and docs stay in sync (AGENTS.md "Git").
+hook_modes = {line.split("\t", 1)[1]: line.split(" ", 1)[0] for line in subprocess.run(
+    ["git", "ls-files", "-s", ".githooks"], cwd=ROOT, capture_output=True, text=True).stdout.splitlines()}
+for hook in (".githooks/commit-msg", ".githooks/pre-push"):
+    if hook_modes.get(hook) != "100755":
+        fail(f"{hook} must be tracked and executable")
+    elif "scripts/check_commits.py" not in read(hook):
+        fail(f"{hook} must run scripts/check_commits.py")
+issue_config = read(".github/ISSUE_TEMPLATE/config.yml")
+if "blank_issues_enabled: false" not in issue_config or "/security/advisories/new" not in issue_config:
+    fail("issue forms must disable blank issues and route vulnerabilities to private advisories")
+for form in ("bug.yml", "change.yml"):
+    if "label: Public-repository check" not in read(".github/ISSUE_TEMPLATE/" + form):
+        fail(f".github/ISSUE_TEMPLATE/{form} must keep the public-repository check")
+selftest = subprocess.run([sys.executable, "scripts/check_commits.py", "--self-test"], cwd=ROOT,
+                          capture_output=True, text=True)
+if selftest.returncode != 0:
+    fail("scripts/check_commits.py --self-test failed: " + (selftest.stderr or selftest.stdout).strip()[-200:])
+agents, readme = read("AGENTS.md"), read("README.md")
+for path in workflows:
+    name = Path(path).name
+    if f"actions/workflows/{name}/badge.svg" not in readme:
+        fail(f"README.md has no status badge for {path}")
+for path in tracked():
+    if path.startswith(("scripts/", ".githooks/", ".github/workflows/")) and Path(path).name not in agents:
+        fail(f"{path} is not described in AGENTS.md")
+for path in [p for p in tracked() if p.endswith(".md")]:
+    for target in re.findall(r"\]\(([^)#\s]+)(?:#[^)]*)?\)", read(path)):
+        if re.match(r"[a-z]+:", target):
+            continue
+        if not (ROOT / path).parent.joinpath(target).resolve().exists():
+            fail(f"{path} links to a missing file: {target}")
+
+# 7. Public-repo hygiene: no secrets, credentials, binaries or large files.
 forbidden_names = re.compile(
     r"(^|/)(\.env(\.(?!example$)[^/]*)?|\.envrc|credentials\.json|tokens\.json|client\.json|id_(rsa|ecdsa|ed25519)\S*)$"
     r"|\.(pem|key|p12|pfx|kdbx|keystore|secret|token|log)$|(^|/)agent-fileserver$")

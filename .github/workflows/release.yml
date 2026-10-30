@@ -1,0 +1,46 @@
+name: Release
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+*']
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    permissions:
+      contents: read
+      issues: read
+    uses: ./.github/workflows/test.yml
+
+  release:
+    needs: tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Publish a GitHub release listing every commit and the issues it closed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          previous=$(git describe --tags --abbrev=0 "$TAG^" 2>/dev/null || true)
+          range="${previous:+$previous..}$TAG"
+          {
+            echo "## Changes"
+            git log --no-merges --reverse --format='- %s (%h)' "$range"
+            echo
+            echo "## Issues closed"
+            git log --format=%B "$range" | grep -oE '^(Fixes|Closes|Resolves) #[0-9]+' \
+              | sed 's/.* /- /' | sort -u || true
+            echo
+            echo "Upgrade: \`git fetch --tags && git checkout $TAG && docker compose up -d --build --wait\`"
+            echo "(see docs/INSTALL.md, Upgrades)."
+          } > "$RUNNER_TEMP/notes.md"
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md"

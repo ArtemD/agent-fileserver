@@ -1,0 +1,73 @@
+name: Bug
+description: Something behaves differently from the docs or breaks a deployment.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This repository is public and issues are permanent. Use placeholders
+        (`files.example.com`, `<token>`, `<key>`) instead of real hostnames,
+        release URLs, keys, passwords, IPs or log excerpts with personal data.
+        Security vulnerabilities go to a private advisory, not here.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: One or two sentences. What is wrong?
+    validations:
+      required: true
+  - type: textarea
+    id: impact
+    attributes:
+      label: Impact
+      description: Who is affected, how badly, and is there a workaround?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Exact commands or requests, smallest case first.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+      description: Status codes, response bodies, headers, log lines (redacted).
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Commit SHA or tag, plus Caddy image if relevant.
+      placeholder: d05e617, caddy:2.11.7-alpine
+    validations:
+      required: true
+  - type: textarea
+    id: cause
+    attributes:
+      label: Root cause
+      description: With file:line references. Leave empty if unknown; update when found.
+  - type: textarea
+    id: fix
+    attributes:
+      label: Fix and verification
+      description: What changed, alternatives rejected and why, tests that prove it.
+  - type: checkboxes
+    id: hygiene
+    attributes:
+      label: Public-repository check
+      options:
+        - label: This issue contains no keys, passwords, release tokens, private hostnames, IPs or personal data.
+          required: true
+        - label: This is not a security vulnerability (those go to a private security advisory).
+          required: true

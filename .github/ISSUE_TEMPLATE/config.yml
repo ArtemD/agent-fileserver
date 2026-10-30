@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/ArtemD/agent-fileserver/security/advisories/new
+    about: Report privately. Never put vulnerabilities, keys or protected URLs in a public issue.

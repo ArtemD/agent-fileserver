@@ -1,0 +1,54 @@
+name: Change
+description: A feature, refactor, docs, CI, dependency or deployment change.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Every change starts with an issue. Commits reference it with
+        `Fixes #N` (the last commit) or `Refs #N` (earlier ones).
+        This repository is public and issues are permanent: use placeholders
+        instead of real hostnames, release URLs, keys, passwords or IPs.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Why is this needed? What happens today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: What will change, and what is explicitly out of scope.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other options and why they were rejected.
+  - type: textarea
+    id: boundaries
+    attributes:
+      label: Security and boundary impact
+      description: |
+        Does this touch auth, limits, the security model, data layout, UIDs,
+        volumes, upgrade behaviour, dependencies or MCP tools (AGENTS.md "Ask first")?
+        Write "None" if not.
+    validations:
+      required: true
+  - type: textarea
+    id: done
+    attributes:
+      label: Acceptance criteria
+      description: How we know it is done (code and tests, docs, CI, deployment; see AGENTS.md).
+    validations:
+      required: true
+  - type: checkboxes
+    id: hygiene
+    attributes:
+      label: Public-repository check
+      options:
+        - label: This issue contains no keys, passwords, release tokens, private hostnames, IPs or personal data.
+          required: true
