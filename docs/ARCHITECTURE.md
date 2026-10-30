@@ -87,7 +87,10 @@ must never be sent as visitor credentials. Password updates invalidate cached
 authorization decisions. Already-admitted transfers may finish after a change.
 
 Public URLs are unlisted, not private. Protected responses are `private,
-no-store`; public content may be cached. Changing protection or deleting cannot
+no-store`; public content may be cached. Every response from the Go service (MCP
+results, which can carry visitor passwords, and authorization errors) is
+`no-store` whatever its handler set; Caddy adds `no-store` only where nothing
+more specific was set, so each response has exactly one `Cache-Control`. Changing protection or deleting cannot
 recall downloads, public caches, in-flight copies, backups or retained log metadata.
 All content on one hostname shares an origin: trust uploaded browser JavaScript
 and do not use production company login sessions here.

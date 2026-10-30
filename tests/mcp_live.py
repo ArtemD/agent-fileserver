@@ -213,7 +213,9 @@ class MCPLive(unittest.TestCase):
         for line in response_headers.read_text(errors="replace").splitlines():
             if ":" in line:
                 name, value = line.split(":", 1)
-                parsed[name.lower()] = value.strip()
+                # Repeated fields combine (RFC 9110 5.3), so equality checks catch duplicates.
+                name = name.lower()
+                parsed[name] = parsed[name] + ", " + value.strip() if name in parsed else value.strip()
         return (int(result.stdout.strip()), parsed,
                 response_body if as_file else response_body.read_bytes())
 
@@ -234,6 +236,8 @@ class MCPLive(unittest.TestCase):
             return None
         check(status == 200, "MCP request failed")
         check("mcp-session-id" not in headers, "server unexpectedly created a session")
+        check(headers.get("cache-control") in ("no-store", "no-store, no-transform"),
+              "MCP response is storable or has duplicate Cache-Control")
         check("access-control-allow-origin" not in headers, "unexpected MCP CORS")
         try:
             response = json.loads(body)

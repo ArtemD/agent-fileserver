@@ -278,6 +278,13 @@ type apiResponse struct {
 func (w *apiResponse) WriteHeader(s int) {
 	if w.status == 0 {
 		w.status = s
+		// Every service response is no-store, whatever a handler set: the MCP SDK
+		// writes "no-cache, no-transform" on event streams, which permits storing.
+		cc := "no-store"
+		if strings.Contains(w.Header().Get("Cache-Control"), "no-transform") {
+			cc = "no-store, no-transform"
+		}
+		w.Header().Set("Cache-Control", cc)
 		w.ResponseWriter.WriteHeader(s)
 	}
 }

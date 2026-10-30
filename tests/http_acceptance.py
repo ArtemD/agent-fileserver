@@ -75,7 +75,9 @@ class Acceptance(unittest.TestCase):
             for line in raw.splitlines():
                 if ":" in line:
                     k, v = line.split(":", 1)
-                    parsed[k.lower()] = v.strip()
+                    # Repeated fields combine (RFC 9110 5.3), so equality checks catch duplicates.
+                    k = k.lower()
+                    parsed[k] = parsed[k] + ", " + v.strip() if k in parsed else v.strip()
             return int(status), parsed, body.read_bytes() if body.exists() else b"", version
 
     def test_root_404_no_listing(self):

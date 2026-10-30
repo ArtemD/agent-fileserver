@@ -22,7 +22,10 @@ header {
 	X-Robots-Tag "noindex, nofollow, noarchive"
 	Referrer-Policy "no-referrer"
 	X-Content-Type-Options "nosniff"
-	Cache-Control "no-store"
+	# A default, written only if nothing more specific did (the service's own
+	# no-store, a release's cache policy). Setting it here as well would send
+	# a second Cache-Control on proxied responses.
+	?Cache-Control "no-store"
 }
 
 route {

@@ -808,4 +808,8 @@ func TestPublicHTTPOnlyServesMCP(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatalf("MCP tools/list: status %d", w.Code)
 	}
+	// Tool results can carry visitor passwords: never storable, even as an event stream.
+	if cc := w.Header().Values("Cache-Control"); len(cc) != 1 || !strings.HasPrefix(cc[0], "no-store") {
+		t.Fatalf("MCP Cache-Control=%q content-type=%q", cc, w.Header().Get("Content-Type"))
+	}
 }
