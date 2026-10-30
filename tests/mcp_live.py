@@ -211,7 +211,9 @@ class MCPLive(unittest.TestCase):
         check(response_body.stat().st_size <= max_bytes, "response exceeds test bound")
         parsed = {}
         for line in response_headers.read_text(errors="replace").splitlines():
-            if ":" in line:
+            if line.startswith("HTTP/"):
+                parsed = {}  # only the final response; 1xx blocks (Expect: 100-continue) precede it
+            elif ":" in line:
                 name, value = line.split(":", 1)
                 # Repeated fields combine (RFC 9110 5.3), so equality checks catch duplicates.
                 name = name.lower()

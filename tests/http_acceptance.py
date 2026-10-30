@@ -73,7 +73,9 @@ class Acceptance(unittest.TestCase):
             raw = headers.read_text()
             parsed = {}
             for line in raw.splitlines():
-                if ":" in line:
+                if line.startswith("HTTP/"):
+                    parsed = {}  # only the final response; 1xx blocks precede it
+                elif ":" in line:
                     k, v = line.split(":", 1)
                     # Repeated fields combine (RFC 9110 5.3), so equality checks catch duplicates.
                     k = k.lower()
