@@ -79,8 +79,9 @@ key. Shared helper: `tests/mcp_fixture.py`.
   returned `curl` command, ticket reuse, refusal of management keys on
   `/_upload` and of tickets on `/mcp`. Flat tar.gz archives publish through
   `publish_archive` and `begin_upload`, an unsafe tar is refused with
-  `entry`, `reason` and `hint`, and an xz archive is refused as
-  `unsupported archive format`. With
+  `entry`, `reason` and `hint`, an xz archive is refused as
+  `unsupported archive format`, and a single uploaded `index.html` is served
+  inline as HTML at the release root, which is the reported URL. With
   `FSERVER_TEST_LARGE=1` it also streams a 100 MiB archive as base64 JSON and
   checks that its download is refused (inline limit 1 MiB), and uploads a
   256 MiB single file through `begin_upload` and checks the round trip.

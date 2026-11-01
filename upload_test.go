@@ -650,3 +650,30 @@ func TestUploadRoutesNotReachableAsInternalCore(t *testing.T) {
 	// In-process, wrong method.
 	assertAPIStatus(t, f.do("GET", "/_api/v1/uploads", nil, "", ""), 405)
 }
+
+// Issue #13: a lone index.html is a one-page site; its release URL is the
+// root, which the static server already answers with the page. Other single
+// files keep /TOKEN/NAME.
+func TestSingleIndexHTMLReportsRootURL(t *testing.T) {
+	f := testAPI(t)
+	page := []byte("<!doctype html><title>t</title><p>hello</p>")
+	v := beginUpload(t, f, beginArgs(page, map[string]any{"filename": "index.html"}))
+	rel := releaseOf(t, putTicket(f, v, page))
+	if rel.OriginalFilename != "index.html" || rel.Files != 1 || rel.URL != f.a.s.baseURL+"/"+rel.Token+"/" {
+		t.Fatalf("upload release: %+v", rel)
+	}
+	got, err := os.ReadFile(filepath.Join(f.a.s.public, rel.Token, "index.html"))
+	if err != nil || !bytes.Equal(got, page) {
+		t.Fatalf("page changed: %v", err)
+	}
+	inline := mcpPublishFile(t, f, map[string]any{"idempotency_key": requestID(), "files": []map[string]any{{"path": "index.html", "text": string(page)}}})
+	if inline.URL != f.a.s.baseURL+"/"+inline.Token+"/" {
+		t.Fatalf("publish_files url %q", inline.URL)
+	}
+	for _, name := range []string{"Index.html", "index.htm", "page.html"} {
+		other := mcpPublishFile(t, f, map[string]any{"idempotency_key": requestID(), "files": []map[string]any{{"path": name, "text": string(page)}}})
+		if other.URL != f.a.s.baseURL+"/"+other.Token+"/"+name {
+			t.Fatalf("%s url %q", name, other.URL)
+		}
+	}
+}

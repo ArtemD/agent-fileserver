@@ -149,8 +149,8 @@ For those, attach the file in Claude (claude.ai, Claude Desktop, Cowork) and ask
 *"publish this to fserver"*. Claude calls `begin_upload`, which returns a
 short-lived, single-use ticket and a ready `curl` command, and runs it in its
 code sandbox. The management key never leaves the connector; the sandbox sees
-only the ticket. The file can be a video, a PDF, or a ZIP/tar.gz site, up to
-1 GiB by default.
+only the ticket. The file can be a video, a PDF, a one-page `index.html`
+(served at the release root), or a ZIP/tar.gz site, up to 1 GiB by default.
 
 Requirements in Claude: **Settings → Capabilities** must have code execution
 and network egress enabled. If egress uses an allowlist, add your server's

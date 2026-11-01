@@ -685,6 +685,23 @@ class MCPLive(unittest.TestCase):
         check(error["error"] == "unsupported archive format", "xz error string mismatch")
         check("detected xz" in error.get("reason", ""), "xz was not named in the reason")
 
+    def test_23_single_index_html_is_a_page(self):
+        # Issue #13: a lone index.html is a one-page site served at the root.
+        path = self.write_fixture("index.html", HTML)
+        ticket = self.begin_upload(len(HTML), hashlib.sha256(HTML).hexdigest(), filename="index.html")
+        status, _, body = self.put_upload(ticket, path)
+        view = self.uploaded_release(status, body, "single index.html")
+        check(view.get("url", "").endswith("/" + view["token"] + "/"),
+              "single index.html release does not report the root URL")
+        for relative in ("", "index.html"):
+            status, headers, data = self.request("/" + view["token"] + "/" + relative, anonymous=True)
+            check(status == 200 and data == HTML, "single index.html not served: /" + relative)
+            check(headers.get("content-type", "").startswith("text/html")
+                  and "content-disposition" not in headers,
+                  "single index.html is not served inline as HTML: /" + relative)
+        self.tool("delete_release", {"token": view["token"]})
+        self.releases.discard(view["token"])
+
     @unittest.skipUnless(os.environ.get("FSERVER_TEST_LARGE") == "1",
                          "set FSERVER_TEST_LARGE=1 for the 256 MiB upload")
     def test_17_optional_large_single_file_upload(self):

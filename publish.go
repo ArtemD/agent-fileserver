@@ -444,7 +444,11 @@ func (s *store) publishWithPolicyContext(ctx context.Context, source, label stri
 	m.URL = s.baseURL + "/" + token + "/"
 	if p.single {
 		m.OriginalFilename = p.name
-		m.URL += url.PathEscape(p.name)
+		// A lone index.html is a one-page site: the static server already
+		// serves it at the release root, so report that shareable URL.
+		if p.name != "index.html" {
+			m.URL += url.PathEscape(p.name)
+		}
 	}
 	if err = s.writeManifest(m); err != nil {
 		return m, "", err

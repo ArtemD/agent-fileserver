@@ -41,8 +41,11 @@ The host supplies actual content in tool arguments. For a few files:
 }
 ```
 
-Send that to `publish_files`. One file without a directory path becomes a single
-download. Multiple files or nested paths form a site. Exactly one of `text` and
+Send that to `publish_files`. One file without a directory path becomes a
+single-file release, served with its content type at `/TOKEN/NAME`, so browsers
+show HTML, PDFs, images and video inline. A lone `index.html` is a one-page
+website: it is also served at `/TOKEN/`, and that root is the reported `url`.
+Multiple files or nested paths form a site. Exactly one of `text` and
 `content_base64` is required per file. Paths must be clean relative names, never
 absolute, dot components, links or secrets.
 
@@ -94,7 +97,7 @@ sends the raw bytes with a single `PUT`.
 | `size` | integer, required | Exact byte length, 1 to the upload maximum |
 | `sha256` | string, required | 64 lowercase hex characters of the file's SHA-256 |
 | `idempotency_key` | string, required | 16–128 characters of `[A-Za-z0-9_-]`, as for the publish tools |
-| `filename` | string, optional | Publish the bytes as one downloadable file of any type with this name (no `/`, no leading `.`, at most 255 bytes). Without it the bytes must be a ZIP, tar or tar.gz site archive, with the same rules as `publish_archive` |
+| `filename` | string, optional | Publish the bytes as one file of any type with this name, served with its content type (`index.html` makes a one-page website at the release root) (no `/`, no leading `.`, at most 255 bytes). Without it the bytes must be a ZIP, tar or tar.gz site archive, with the same rules as `publish_archive` |
 | `label` | string, optional | At most 200 characters |
 | `spa` | boolean, optional | Archives only; not allowed with `filename` |
 | `password` | string, optional | Visitor password, 8–72 UTF-8 bytes; the release is public without it |
@@ -163,7 +166,10 @@ completes; check `list_releases` or retry with the same idempotency key.
 | 507 | Not enough free disk |
 
 The `filename` mode publishes one file of any type, for example a video or PDF,
-as a single download. The archive mode needs no `filename`.
+served with its content type at `/TOKEN/NAME`. For a one-page website too large
+to pass inline, use `filename: "index.html"`: the page is served at `/TOKEN/`,
+which is the reported `url`, with no archive needed. The archive mode needs no
+`filename`.
 
 ## Errors
 
