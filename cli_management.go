@@ -12,9 +12,24 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 )
+
+// envPositive reads an optional positive integer limit; unset or empty means
+// the built-in default (0). Anything else that is not a positive integer fails.
+func envPositive(name string) (int64, error) {
+	raw := os.Getenv(name)
+	if raw == "" {
+		return 0, nil
+	}
+	n, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || n < 1 {
+		return 0, fmt.Errorf("%s must be a positive integer number of bytes or entries", name)
+	}
+	return n, nil
+}
 
 func defaultTokenFile() string {
 	if p := os.Getenv("FSERVER_TOKEN_FILE"); p != "" {
@@ -122,7 +137,22 @@ func runManagement(args []string, stdout, stderr io.Writer) error {
 		if err != nil {
 			return err
 		}
-		handler, err := newAPIServer(s, t, apiConfig{Namespace: os.Getenv("FSERVER_NAMESPACE")})
+		cfg := apiConfig{Namespace: os.Getenv("FSERVER_NAMESPACE")}
+		if cfg.MaxUploadBytes, err = envPositive("FSERVER_MAX_UPLOAD_BYTES"); err != nil {
+			return err
+		}
+		if cfg.MaxExtractBytes, err = envPositive("FSERVER_MAX_EXTRACT_BYTES"); err != nil {
+			return err
+		}
+		entries, err := envPositive("FSERVER_MAX_ENTRIES")
+		if err != nil {
+			return err
+		}
+		if entries > 1000000 {
+			return fmt.Errorf("FSERVER_MAX_ENTRIES must be at most 1000000")
+		}
+		cfg.MaxEntries = int(entries)
+		handler, err := newAPIServer(s, t, cfg)
 		if err != nil {
 			return err
 		}

@@ -71,11 +71,95 @@ On a lost response, retry with the **same idempotency key and exact bytes and
 metadata**. Changed payloads conflict. An ambiguous interrupted record requires
 inspection rather than automatically publishing another copy.
 
+## Large uploads
+
+Base64 inside JSON is wasteful, so files above what a model can emit reliably
+go out of band. `begin_upload` mints a one-time upload ticket; the client then
+sends the raw bytes with a single `PUT`.
+
+`begin_upload` arguments (unknown fields rejected, no nulls):
+
+| Field | Type | Notes |
+|---|---|---|
+| `size` | integer, required | Exact byte length, 1 to the upload maximum |
+| `sha256` | string, required | 64 lowercase hex characters of the file's SHA-256 |
+| `idempotency_key` | string, required | 16–128 characters of `[A-Za-z0-9_-]`, as for the publish tools |
+| `filename` | string, optional | Publish the bytes as one downloadable file of any type with this name (no `/`, no leading `.`, at most 255 bytes). Without it the bytes must be a ZIP, tar or tar.gz site archive, with the same rules as `publish_archive` |
+| `label` | string, optional | At most 200 characters |
+| `spa` | boolean, optional | Archives only; not allowed with `filename` |
+| `password` | string, optional | Visitor password, 8–72 UTF-8 bytes; the release is public without it |
+
+Result:
+
+```json
+{
+  "upload_url": "https://files.example.com/_upload",
+  "method": "PUT",
+  "headers": {"Authorization": "Bearer upl_<43 characters>"},
+  "expires_at": "2026-11-01T18:30:00Z",
+  "size": 95000328,
+  "sha256": "<64 hex characters>",
+  "command": "curl --fail-with-body -sS -T FILE -H 'Authorization: Bearer upl_…' https://files.example.com/_upload"
+}
+```
+
+`FILE` in `command` is a literal placeholder: replace it with the local path and
+run the command. The response of the `PUT` is the published release, in the
+same shape `publish_archive` returns (`token`, `url`, `files`, `bytes`,
+`protected`, …). The tool is not read-only and not idempotent by itself.
+
+Typical flow in Claude.ai, Claude Desktop or Cowork: the user attaches a file
+(it appears in the code sandbox, for example under `/mnt/user-data/uploads/`),
+Claude computes the size and SHA-256, calls `begin_upload`, runs the command in
+the sandbox and reports the URL. This needs code execution and network egress
+in Claude's Settings → Capabilities (add the server's domain if egress uses an
+allowlist). The same works from Claude Code or any shell with curl.
+
+Ticket rules:
+
+- `upl_` followed by 43 base64url characters (256 random bits). Only its SHA-256
+  is held, in memory; tickets are lost on restart.
+- Present it within 30 minutes (`expires_at`). It is single use: the first `PUT`
+  that presents it consumes it, whatever the outcome.
+- At most 8 unused tickets exist at once; `begin_upload` returns an error when full.
+- It belongs to the key that minted it; revoking that key invalidates its tickets.
+- Accepted only on `/_upload` and only in `Authorization: Bearer`, never in
+  `X-Auth-Token` or the URL. Management keys are refused on `/_upload`; tickets
+  are refused on `/mcp`.
+- To retry after a failure, call `begin_upload` again with the **same**
+  `idempotency_key`, size, SHA-256 and metadata. If the first publish completed,
+  the `PUT` returns that same release (201) instead of publishing a duplicate.
+
+`PUT /_upload`: exact path, no query string, only `PUT` (others get 405 with
+`Allow: PUT`). The body is the raw bytes, exactly `size` long, with the declared
+SHA-256. A cross-origin `Origin` header is refused; there is no CORS. One upload
+is received at a time, and publishing then waits for any MCP publish in progress.
+The body may take up to 60 minutes to send, and publishing up to 15 minutes more.
+If the connection drops after the body was fully received, publishing still
+completes; check `list_releases` or retry with the same idempotency key.
+
+| Status | When |
+|---|---|
+| 201 | Published; the body is the release JSON |
+| 400 | Body shorter than declared, SHA-256 mismatch, malformed or unsafe archive, or `Content-Length` differs from the declared size |
+| 401 | Ticket missing, unknown, used, expired or revoked, or a management key was sent (`WWW-Authenticate: Bearer`) |
+| 403 | Cross-origin `Origin` |
+| 404 | Another path, or a query string |
+| 405 | Method other than `PUT` |
+| 409 | Idempotency key reused with different bytes or metadata, or the earlier outcome is ambiguous |
+| 413 | `Content-Length` larger than declared, or archive limits (size, extracted size, entries) exceeded |
+| 422 | The publisher refused the content (hidden files, secrets, links, …), or `spa` without a root `index.html` |
+| 429 | Another upload in progress, too many bad tickets from this IP (10/minute, shared with `/mcp`), or the publish rate limit (30/hour/key) |
+| 507 | Not enough free disk |
+
+The `filename` mode publishes one file of any type, for example a video or PDF,
+as a single download. The archive mode needs no `filename`.
+
 ## Other tools
 
 | Tool | Arguments |
 |---|---|
-| `server_info` | `{}` |
+| `server_info` | `{}`; includes an `upload` object: `max_bytes`, `max_extract_bytes`, `max_entries`, `ticket_seconds`, `max_pending_tickets` |
 | `list_releases` | `{}` |
 | `release_info` | `{"token":"RELEASE_TOKEN"}` |
 | `download_release` | `{"token":"RELEASE_TOKEN"}` |
@@ -83,6 +167,8 @@ inspection rather than automatically publishing another copy.
 | `set_password` | `{"token":"RELEASE_TOKEN","password":"NEW_VISITOR_PASSWORD"}` |
 | `reset_password` | `{"token":"RELEASE_TOKEN"}` |
 | `remove_password` | `{"token":"RELEASE_TOKEN"}` |
+
+`begin_upload` is described under [Large uploads](#large-uploads).
 
 Reset returns a new secret visitor password; don't put it in public messages or
 logs. Remove-password makes a release public. Delete is permanent at the origin.
@@ -95,15 +181,28 @@ output is bounded to 2 MiB (the MCP result envelope adds overhead).
 
 ## Limits and real-client testing
 
-Default archive input and extracted originals are each bounded to 100 MiB.
+MCP inline publishing (`publish_files`, `publish_archive`, base64 in JSON):
+archive input and extracted originals are each bounded to 100 MiB and 5,000
+filesystem objects. These MCP limits are unchanged even when the upload limits
+below are raised.
 Base64 of 100 MiB is about 133.33 MiB **before JSON**; the request budget adds
 6 MiB overhead, never exceeds 140 MiB. Proxies/client hosts may impose less.
 One MCP POST is admitted before parsing; batches are rejected. Structural
 budgets cover the entire JSON-RPC envelope: depth 64, every array 5,000 items,
 50,000 structural items. File count/path/expansion budgets also apply.
 
+Uploads through `begin_upload` default to 1 GiB per upload
+(`FSERVER_MAX_UPLOAD_BYTES`), 1 GiB of extracted archive content
+(`FSERVER_MAX_EXTRACT_BYTES`) and 50,000 files and directories per archive
+(`FSERVER_MAX_ENTRIES`); see [installation](INSTALL.md). ZIP is limited to
+65,534 entries whatever the setting, because ZIP64 is not supported. An upload
+needs free disk above the 2 GiB reserve: about the upload size plus four times
+the extract limit for archives, or five times the size for a single file;
+otherwise the `PUT` fails with 507. The upload path streams to disk and does not
+hold the file in memory.
+
 Large JSON is not streaming binary: the service briefly holds several copies of
-an upload (about 10× the file size at peak, e.g. ~120 MB for 10 MiB). The
+an inline upload (about 10× the file size at peak, e.g. ~120 MB for 10 MiB). The
 compose file sets a 512 MiB Go GC target (`GOMEMLIMIT`). A real 100 MiB decoded
 tar is accepted end to end in CI, but realistic MCP clients send far less,
 because the model must emit the base64 itself.
@@ -113,12 +212,15 @@ For Claude/Cowork or another host:
 1. Connect with the private header and call `server_info`.
 2. Create HTML + a relative CSS/image asset; publish/visit/verify both.
 3. Drop a small ZIP into that host and have it supply its bytes to
-   `publish_archive`, **not just a filename or attachment ID**.
+   `publish_archive`, **not just a filename or attachment ID**. If the host has a
+   code sandbox with network egress, test `begin_upload` with the same ZIP.
 4. Verify password protection also blocks the asset; remove/delete only the
    fixture.
 5. Increase sizes to what you actually need; report the largest proven size.
 
-If the host cannot put local file bytes into JSON tool arguments, that host can
-only publish what it can generate as text or base64. This server deliberately
-does not fetch arbitrary URLs, execute uploaded helpers, or expose unauthenticated
-one-time upload capabilities.
+If the host cannot put local file bytes into JSON tool arguments and has no
+sandbox that can run `curl`, that host can only publish what it can generate as
+text or base64. This server deliberately does not fetch arbitrary URLs or
+execute uploaded helpers. Its one non-MCP write path is `PUT /_upload`, which
+accepts only a short-lived, single-use ticket minted by `begin_upload`; it is
+not a management API.

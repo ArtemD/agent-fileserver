@@ -8,7 +8,7 @@ origin and all its agent keys can manage all its releases.
 MCP client (Claude, Claude Code, …)
   Authorization: Bearer key  or  X-Auth-Token: key
                        |
-               Caddy HTTPS ingress  (routes only /mcp to the service)
+               Caddy HTTPS ingress  (routes only /mcp and PUT /_upload)
                        |
                private Unix socket
                        |
@@ -25,8 +25,8 @@ Visitors -> Caddy -> internal policy check -> Caddy static file bytes
 
 MCP is the only management interface and not a second filesystem writer: its
 tools call the shared release core in-process. That core answers no public HTTP
-route; Caddy routes only `/mcp`, and the service refuses anything else that did
-not come from the MCP adapter. It uses the
+route; Caddy routes only `/mcp` and the ticket-only `PUT /_upload` (below), and
+the service refuses anything else that did not come from the MCP adapter. It uses the
 official MCP Go SDK and Streamable HTTP. Stateless request authentication keeps
 revocation effective on subsequent calls. Management credentials are headers,
 never tool arguments, query parameters, browser cookies or visitor passwords.
@@ -74,6 +74,42 @@ decoded archive/extracted-content limits still apply. A server accepting a large
 request does not establish any particular client's attachment, model-context,
 or tool-argument limits.
 
+## Upload tickets
+
+MCP JSON cannot carry large files, so a second Caddy route, `PUT /_upload`,
+goes to the same Unix socket. It is not a management API, a form or a second
+publisher: the handler checks a ticket and hands the bytes to the same
+in-process release core as MCP. Every other path and method is refused.
+
+Tickets are minted only by the `begin_upload` MCP tool, so only a holder of a
+management key can obtain one.
+
+- 256 random bits (`upl_` plus 43 base64url characters); only the SHA-256 is
+  held, in memory, never on disk, and tickets vanish on restart.
+- Valid for 30 minutes and single use: consumed by the first `PUT` that presents
+  it, whatever the outcome. At most 8 unused tickets exist at once.
+- Bound to the minting key and revoked with it.
+- Read only from `Authorization: Bearer` on `/_upload`. Never from the URL or
+  `X-Auth-Token`, and refused on `/mcp`. Management keys are refused on
+  `/_upload`, so a leaked ticket cannot manage anything and a leaked key is not
+  exposed to the sandbox that runs the upload.
+- The ticket fixes the exact size, SHA-256, idempotency key and publish
+  metadata, so the bytes that arrive must be the bytes that were approved.
+
+| Threat | Mitigation |
+|---|---|
+| Guessing a ticket | 256 bits; failed attempts count towards the same per-IP limit as bad keys (10/minute, shared with `/mcp`) |
+| Disk exhaustion | Declared size is capped (1 GiB default) and checked against `Content-Length`; Caddy caps the body at the same limit; free-space headroom is checked up front (507); archive size, extracted size and entry limits apply; one upload is received at a time |
+| Slow or stalled clients | One upload at a time; at most 60 minutes to send the body and 15 minutes to publish; at most 8 pending tickets |
+| Leakage | Ticket only in the `Authorization` header, which Caddy redacts from the access log; never in a URL, audit log or tool result beyond the one that mints it; short life and single use limit the damage of a leak |
+| Confusion between credentials | Separate formats and routes: tickets are refused on `/mcp`, management keys on `/_upload` |
+| Browsers and CORS | A cross-origin `Origin` header gets 403; no CORS headers are sent anywhere, and the ticket is a header a page cannot attach to a simple request |
+| Corrupt or hostile content | Same validation as MCP publishing: traversal, links, special files, secrets and resource limits are rejected; ZIP is limited to 65,534 entries and has no ZIP64 |
+| Duplicate publishes on retry | The idempotency key from `begin_upload` is honoured: a repeat returns the earlier release, a changed payload conflicts (409) |
+
+The API container still has `network_mode: none`: it never fetches URLs, and the
+upload arrives through the Unix socket like MCP does.
+
 ## Credentials and privacy
 
 Named API keys have 256 random bits, independent revocation and optional expiry;
@@ -107,9 +143,12 @@ read-only. Containers restart `unless-stopped` and have health checks; a crashed
 API removes its own stale socket on restart. No container memory/CPU limits are
 set by default; add them in compose if your host needs them.
 
-Default limits: 100 MiB archive wire/decoded input, 100 MiB extracted originals,
-5,000 filesystem objects including implicit directories, bounded depth and path
-length, one publishing job, 30 attempts/hour/key, disk byte/inode headroom.
+Default limits for MCP inline publishing: 100 MiB archive wire/decoded input,
+100 MiB extracted originals, 5,000 filesystem objects including implicit
+directories, bounded depth and path length, one publishing job, 30
+attempts/hour/key, disk byte/inode headroom. Uploads with a ticket default to
+1 GiB, 1 GiB extracted and 50,000 objects (configurable, see `docs/INSTALL.md`),
+and share the publishing job and the hourly attempt limit.
 Request deadlines are application budgets, not a promise about upstream limits.
 MCP JSON has a separately larger envelope limit because of base64 overhead.
 

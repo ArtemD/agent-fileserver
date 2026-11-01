@@ -11,7 +11,10 @@ Creates its own one-day fixture credentials and synthetic releases, then deletes
 only those releases and revokes only those credentials. Never reads the registry.
 Credentials/passwords are private header files, not command arguments. Failures
 and subprocess output are deliberately redacted. No installed service changes.
-Set FSERVER_TEST_LARGE=1 for an additional exact-100-MiB decoded archive check.
+Upload tickets (begin_upload, then PUT /_upload) are exercised with small files;
+the ticket travels only in a private header file, never in argv.
+Set FSERVER_TEST_LARGE=1 for an additional exact-100-MiB decoded archive check
+and a 256 MiB single-file upload/download round trip.
 """
 
 import base64
@@ -172,7 +175,7 @@ class MCPLive(unittest.TestCase):
     @classmethod
     def request(cls, path, method="GET", *, body=None, key=None,
                 anonymous=False, password=None, headers=None, max_bytes=4 << 20,
-                as_file=False, key_header="authorization"):
+                as_file=False, key_header="authorization", upload=None, max_time=190):
         cls.seq += 1
         stem = cls.work / ("request-" + str(cls.seq))
         hfile = stem.with_suffix(".headers")
@@ -192,7 +195,7 @@ class MCPLive(unittest.TestCase):
         private_write(response_headers, b"")
         private_write(response_body, b"")
         args = ["curl", "-q", "--silent", "--show-error", "--path-as-is",
-                "--max-time", "190", "--max-filesize", str(max_bytes),
+                "--max-time", str(max_time), "--max-filesize", str(max_bytes),
                 "--request", method, "--header", "@" + str(hfile),
                 "--dump-header", str(response_headers),
                 "--output", str(response_body), "--write-out", "%{http_code}"]
@@ -204,8 +207,11 @@ class MCPLive(unittest.TestCase):
                 private_write(bfile, body)
                 body = bfile
             args += ["--data-binary", "@" + str(body)]
+        if upload is not None:
+            # Streamed from disk (--data-binary would buffer the whole file).
+            args += ["--upload-file", str(upload)]
         result = subprocess.run(args + [BASE + path], capture_output=True,
-                                timeout=200)
+                                timeout=max_time + 10)
         check(result.returncode == 0, "curl transport failed (output redacted)")
         check(result.stdout.strip().isdigit(), "invalid curl status")
         check(response_body.stat().st_size <= max_bytes, "response exceeds test bound")
@@ -300,14 +306,20 @@ class MCPLive(unittest.TestCase):
         tools = {tool["name"]: tool for tool in result.get("tools", [])}
         expected = {"server_info", "list_releases", "release_info", "publish_files",
                     "publish_archive", "download_release", "delete_release",
-                    "set_password", "reset_password", "remove_password"}
+                    "set_password", "reset_password", "remove_password", "begin_upload"}
         check(expected <= tools.keys(), "required MCP tools missing")
-        for name in ("publish_files", "publish_archive", "remove_password"):
+        for name in ("publish_files", "publish_archive", "remove_password", "begin_upload"):
             check(tools[name].get("annotations", {}).get("openWorldHint") is True,
                   "public side-effect annotation missing")
         me = self.tool("server_info", {})
         check(me.get("agent") == self.tag and me.get("namespace"),
               "authenticated MCP identity mismatch")
+        upload = me.get("upload")
+        check(isinstance(upload, dict)
+              and all(type(upload.get(field)) is int for field in (
+                  "max_bytes", "max_extract_bytes", "max_entries",
+                  "ticket_seconds", "max_pending_tickets")),
+              "server_info upload limits missing or malformed")
 
     def test_03_publish_files_and_anonymous_assets(self):
         view = self.publish()
@@ -442,6 +454,166 @@ class MCPLive(unittest.TestCase):
             for method in ("GET", "POST"):
                 status, _, _ = self.request(path, method, body=b"{}" if method == "POST" else None)
                 check(status in (404, 405), "non-MCP management route is reachable: " + path)
+
+    @classmethod
+    def begin_upload(cls, size, digest, *, filename=None, label=None, idempotency_key=None):
+        label = label or cls.tag + "-upload-" + secrets.token_hex(4)
+        cls.release_labels.add(label)
+        args = {"size": size, "sha256": digest, "label": label,
+                "idempotency_key": idempotency_key or secrets.token_urlsafe(24)}
+        if filename is not None:
+            args["filename"] = filename
+        ticket = cls.tool("begin_upload", args)
+        check(isinstance(ticket, dict), "begin_upload result shape mismatch")
+        return ticket
+
+    @staticmethod
+    def ticket_secret(ticket):
+        headers = ticket.get("headers")
+        auth = headers.get("Authorization") if isinstance(headers, dict) else None
+        check(isinstance(auth, str) and auth.startswith("Bearer upl_"),
+              "upload ticket header missing or malformed")
+        return auth[len("Bearer "):]
+
+    @classmethod
+    def put_upload(cls, ticket, path, *, key=None, anonymous=False, **kwargs):
+        """PUT a file to /_upload with the ticket (or another credential) in a private header file."""
+        if key is None and not anonymous:
+            key = cls.ticket_secret(ticket)
+        return cls.request("/_upload", "PUT", upload=path, key=key, anonymous=anonymous, **kwargs)
+
+    @classmethod
+    def uploaded_release(cls, status, body, stage):
+        check(status == 201, stage + ": upload not accepted")
+        try:
+            view = json.loads(body)
+        except ValueError:
+            raise LiveFailure(stage + ": upload returned invalid JSON") from None
+        check(isinstance(view, dict) and TOKEN.fullmatch(view.get("token", "")),
+              stage + ": uploaded release metadata invalid")
+        cls.releases.add(view["token"])
+        return view
+
+    @staticmethod
+    def auth_refused(result):
+        """401, or the shared per-IP failed-credential limit other suites may have filled (see test_10)."""
+        status, _, body = result
+        if status == 429:
+            try:
+                return json.loads(body).get("error") == "too many authentication failures"
+            except (ValueError, AttributeError):
+                return False
+        return status == 401
+
+    def write_fixture(self, name, data):
+        path = self.work / name
+        private_write(path, data)
+        return path
+
+    def test_14_archive_upload_ticket_single_use_and_idempotent(self):
+        zipped = io.BytesIO()
+        with zipfile.ZipFile(zipped, "w", zipfile.ZIP_DEFLATED) as archive:
+            for name, content in (("index.html", HTML), ("style.css", CSS),
+                                  ("pixel.png", PNG)):
+                archive.writestr(name, content)
+        data = zipped.getvalue()
+        path = self.write_fixture("upload-site.zip", data)
+        label = self.tag + "-upload-zip"
+        idem = secrets.token_urlsafe(24)
+        digest = hashlib.sha256(data).hexdigest()
+        ticket = self.begin_upload(len(data), digest, label=label, idempotency_key=idem)
+        check(ticket.get("method") == "PUT" and isinstance(ticket.get("upload_url"), str)
+              and ticket["upload_url"].endswith("/_upload"), "begin_upload target mismatch")
+        check(ticket.get("size") == len(data) and ticket.get("sha256") == digest
+              and isinstance(ticket.get("expires_at"), str), "begin_upload echo mismatch")
+        check(isinstance(ticket.get("command"), str) and "-T FILE" in ticket["command"],
+              "begin_upload command lacks the -T FILE placeholder")
+        self.ticket_secret(ticket)
+        status, _, body = self.put_upload(ticket, path)
+        view = self.uploaded_release(status, body, "archive")
+        check(view.get("files") == 3, "uploaded ZIP entry count mismatch")
+        for name, content in (("index.html", HTML), ("style.css", CSS), ("pixel.png", PNG)):
+            self.public_bytes(view["token"], name, content)
+        # The ticket was consumed by its first use.
+        check(self.auth_refused(self.put_upload(ticket, path)),
+              "a used upload ticket was accepted again")
+        # A retry with the same idempotency key returns the same release.
+        again = self.begin_upload(len(data), digest, label=label, idempotency_key=idem)
+        status, _, body = self.put_upload(again, path)
+        second = self.uploaded_release(status, body, "idempotent retry")
+        check(second["token"] == view["token"], "upload retry created another release")
+
+    def test_15_single_file_upload(self):
+        data = os.urandom(3 << 20)
+        path = self.write_fixture("report.bin", data)
+        ticket = self.begin_upload(len(data), hashlib.sha256(data).hexdigest(),
+                                   filename="report.bin")
+        status, _, body = self.put_upload(ticket, path)
+        view = self.uploaded_release(status, body, "single file")
+        check(isinstance(view.get("url"), str) and view["url"].endswith("/report.bin"),
+              "single-file release URL does not end with the filename")
+        self.public_bytes(view["token"], "report.bin", data)
+
+    def test_16_upload_refusals(self):
+        data = os.urandom(64 << 10)
+        digest = hashlib.sha256(data).hexdigest()
+        path = self.write_fixture("refusal.bin", data)
+        # Wrong declared SHA-256.
+        ticket = self.begin_upload(len(data), "0" * 64, filename="refusal.bin")
+        check(self.put_upload(ticket, path)[0] == 400, "SHA-256 mismatch was not refused with 400")
+        # Declared size larger than the bytes sent.
+        ticket = self.begin_upload(len(data) + 1, digest, filename="refusal.bin")
+        check(self.put_upload(ticket, path)[0] == 400, "size mismatch was not refused with 400")
+        # A management key is not an upload credential.
+        check(self.auth_refused(self.put_upload(None, path, key=self.key)),
+              "management key was accepted on /_upload")
+        check(self.auth_refused(self.put_upload(None, path, anonymous=True)),
+              "anonymous upload was not refused with 401")
+        # A ticket is not a management credential; then use it for real to clean up.
+        ticket = self.begin_upload(len(data), digest, filename="refusal.bin")
+        message = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list",
+                              "params": {}}).encode()
+        refused = self.request("/mcp", "POST", body=message,
+                               key=self.ticket_secret(ticket), headers={
+                                   "Content-Type": "application/json",
+                                   "Accept": "application/json, text/event-stream",
+                                   "MCP-Protocol-Version": "2025-06-18"})
+        check(self.auth_refused(refused), "upload ticket was accepted on /mcp")
+        status, _, body = self.put_upload(ticket, path)
+        self.uploaded_release(status, body, "ticket cleanup")
+        # Only PUT, exact path.
+        status, _, _ = self.request("/_upload", "GET", anonymous=True)
+        check(status == 405, "GET /_upload was not refused with 405")
+        check(self.request("/_upload?x=1", "PUT", upload=path, anonymous=True)[0] == 404,
+              "PUT /_upload with a query string was not refused with 404")
+
+    @unittest.skipUnless(os.environ.get("FSERVER_TEST_LARGE") == "1",
+                         "set FSERVER_TEST_LARGE=1 for the 256 MiB upload")
+    def test_17_optional_large_single_file_upload(self):
+        size = 256 << 20
+        path = self.work / "large.bin"
+        private_write(path, b"")
+        digest = hashlib.sha256()
+        with path.open("wb") as out:
+            left = size
+            while left:
+                chunk = os.urandom(min(left, 4 << 20))
+                digest.update(chunk)
+                out.write(chunk)
+                left -= len(chunk)
+        ticket = self.begin_upload(size, digest.hexdigest(), filename="large.bin")
+        status, _, body = self.put_upload(ticket, path, max_time=1800)
+        view = self.uploaded_release(status, body, "large file")
+        check(view.get("bytes") == size, "large upload size mismatch")
+        status, _, downloaded = self.request("/" + view["token"] + "/large.bin", anonymous=True,
+                                             max_bytes=size + (1 << 20), as_file=True,
+                                             max_time=1800)
+        check(status == 200 and downloaded.stat().st_size == size, "large download failed")
+        check_digest = hashlib.sha256()
+        with downloaded.open("rb") as source:
+            while chunk := source.read(4 << 20):
+                check_digest.update(chunk)
+        check(check_digest.digest() == digest.digest(), "large download hash mismatch")
 
     @unittest.skipUnless(os.environ.get("FSERVER_TEST_LARGE") == "1",
                          "set FSERVER_TEST_LARGE=1 for exact100MiB archive")

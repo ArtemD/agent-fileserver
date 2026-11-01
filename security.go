@@ -242,8 +242,7 @@ func (t *tokenStore) Authenticate(raw string, now time.Time) (agentIdentity, err
 		stored, _ := hex.DecodeString(r.Hash)
 		match := subtle.ConstantTimeCompare(stored, digest[:])
 		if match == 1 && r.RevokedAt == nil && (r.ExpiresAt == nil || now.Before(*r.ExpiresAt)) {
-			id := sha256.Sum256(append([]byte("fserver-agent-identity:"), stored...))
-			identity = agentIdentity{ID: hex.EncodeToString(id[:]), Label: r.Label}
+			identity = agentIdentity{ID: identityID(stored), Label: r.Label}
 			found = true
 		}
 	}
@@ -251,6 +250,29 @@ func (t *tokenStore) Authenticate(raw string, now time.Time) (agentIdentity, err
 		return agentIdentity{}, errInvalidCredential
 	}
 	return identity, nil
+}
+
+func identityID(storedHash []byte) string {
+	id := sha256.Sum256(append([]byte("fserver-agent-identity:"), storedHash...))
+	return hex.EncodeToString(id[:])
+}
+
+// Active reports whether the key behind an identity is still usable, so
+// credentials it minted (upload tickets) stop working when it is revoked or expires.
+func (t *tokenStore) Active(id string, now time.Time) bool {
+	reg, err := t.read()
+	if err != nil {
+		return false
+	}
+	active := false
+	for _, r := range reg.Tokens {
+		stored, _ := hex.DecodeString(r.Hash)
+		if subtle.ConstantTimeCompare([]byte(identityID(stored)), []byte(id)) == 1 &&
+			r.RevokedAt == nil && (r.ExpiresAt == nil || now.Before(*r.ExpiresAt)) {
+			active = true
+		}
+	}
+	return active
 }
 func summarizeToken(r tokenRecord, now time.Time) tokenSummary {
 	status := "active"

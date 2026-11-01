@@ -27,7 +27,22 @@ cp .env.example .env    # then edit
 | `FSERVER_LOG_DIR` | Host directory for the access log (`./logs`) |
 | `FSERVER_NAMESPACE` | Optional label shown by `server_info` |
 | `FSERVER_EDGE_SUBNET`, `FSERVER_TRUSTED_PROXIES` | Only if `172.30.53.0/24` clashes on this host; keep in sync |
+| `FSERVER_MAX_UPLOAD_BYTES` | Optional. Largest `begin_upload` upload, default `1073741824` (1 GiB). Also Caddy's body cap on `/_upload` |
+| `FSERVER_MAX_EXTRACT_BYTES` | Optional. Largest total unpacked size of an uploaded archive, default `1073741824` (1 GiB) |
+| `FSERVER_MAX_ENTRIES` | Optional. Most files and directories in an uploaded archive, default `50000` (ZIP is limited to 65,534 anyway) |
 | `COMPOSE_FILE` | Set to `compose.yaml:compose.direct.yaml` to make direct mode the default |
+
+These three limits do not change MCP inline publishing (100 MiB, 5,000 objects).
+Raise them only if your disk can take it: above the 2 GiB free-space reserve, an
+archive upload needs about its size plus four times `FSERVER_MAX_EXTRACT_BYTES`,
+and a single-file upload needs about five times its size; otherwise the upload
+fails with 507. After changing them, run `docker compose up -d --wait` again.
+
+Large uploads go through your HTTPS frontend, so check your proxy's request size
+and timeout limits: an upload can take up to an hour to send. exe.dev's proxy
+streams request bodies and did not reject a 200 MB upload in testing. Other
+frontends (nginx, Cloudflare Tunnel or proxy plans, load balancers) may cap the
+body size or time, and then the upload fails before it reaches Caddy.
 
 `.env` holds configuration only and is git-ignored. **Agent keys never go in
 `.env`**: the server stores only SHA-256 hashes in the data directory.
@@ -88,7 +103,7 @@ the key registry read-only, so a compromised service cannot mint keys.
 | Item | Purpose |
 |---|---|
 | `api` container (`agent-fileserver:local`, UID 10001) | MCP service; **no network**, private Unix socket only |
-| `caddy` container (`caddy:2.11.7-alpine`, UID 10002) | Public edge; serves `data/public` read-only, routes only `/mcp` |
+| `caddy` container (`caddy:2.11.7-alpine`, UID 10002) | Public edge; serves `data/public` read-only, routes only `/mcp` and the ticket-only `PUT /_upload` |
 | `admin` (profile, on demand) | Key administration; no network |
 | `init` (one-shot) | Creates host directories with the right owners, then exits |
 | `data/public/` | Immutable public release bytes |

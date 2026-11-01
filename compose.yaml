@@ -16,6 +16,9 @@ x-hardened: &hardened
 x-service-env: &service-env
   FSERVER_BASE_URL: https://${FSERVER_DOMAIN:?set FSERVER_DOMAIN in .env}
   FSERVER_NAMESPACE: ${FSERVER_NAMESPACE:-default}
+  FSERVER_MAX_UPLOAD_BYTES: ${FSERVER_MAX_UPLOAD_BYTES:-1073741824}
+  FSERVER_MAX_EXTRACT_BYTES: ${FSERVER_MAX_EXTRACT_BYTES:-1073741824}
+  FSERVER_MAX_ENTRIES: ${FSERVER_MAX_ENTRIES:-50000}
 
 services:
   # One-shot: create host directories with the ownership the services expect.
@@ -60,7 +63,7 @@ services:
     depends_on:
       init: {condition: service_completed_successfully}
 
-  # Public edge: serves release bytes read-only and routes only /mcp to the API.
+  # Public edge: serves release bytes read-only and routes only /mcp and /_upload to the API.
   caddy:
     <<: *hardened
     image: caddy:2.11.7-alpine
@@ -72,6 +75,8 @@ services:
     command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile.${FSERVER_MODE:-proxy}", "--adapter", "caddyfile"]
     environment:
       FSERVER_DOMAIN: ${FSERVER_DOMAIN:?set FSERVER_DOMAIN in .env}
+      # Caddy's body cap on /_upload; keep equal to the service's limit.
+      FSERVER_MAX_UPLOAD_BYTES: ${FSERVER_MAX_UPLOAD_BYTES:-1073741824}
       # Docker's bridge gateway (pinned below): every connection from the host's
       # published port arrives from it, so it stands in for the trusted frontend.
       FSERVER_TRUSTED_PROXIES: ${FSERVER_EDGE_GATEWAY:-172.30.53.1}/32

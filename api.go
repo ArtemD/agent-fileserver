@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"mime"
 	"net/http"
@@ -60,6 +61,8 @@ type apiServer struct {
 	mcpHandler        http.Handler
 	mcpAdmission      chan struct{}
 	mcpSmallAdmission chan struct{}
+	tickets           map[[32]byte]uploadTicket
+	uploadSlot        chan struct{}
 }
 type apiReplay struct {
 	Created      time.Time   `json:"created"`
@@ -84,14 +87,15 @@ func newAPIServer(s *store, tokens *tokenStore, cfg apiConfig) (*apiServer, erro
 	if !apiValidLabel(cfg.Namespace) || strings.ContainsAny(cfg.Namespace, " /\\") {
 		return nil, fmt.Errorf("invalid namespace")
 	}
+	// Defaults for ticket uploads; MCP inline publishing is capped lower (mcpLimits).
 	if cfg.MaxUploadBytes == 0 {
-		cfg.MaxUploadBytes = 100 << 20
+		cfg.MaxUploadBytes = 1 << 30
 	}
 	if cfg.MaxExtractBytes == 0 {
-		cfg.MaxExtractBytes = 100 << 20
+		cfg.MaxExtractBytes = 1 << 30
 	}
 	if cfg.MaxEntries == 0 {
-		cfg.MaxEntries = 5000
+		cfg.MaxEntries = 50000
 	}
 	if cfg.MinFreeBytes == 0 {
 		cfg.MinFreeBytes = 2 << 30
@@ -104,6 +108,8 @@ func newAPIServer(s *store, tokens *tokenStore, cfg apiConfig) (*apiServer, erro
 	}
 	a := &apiServer{s: s, tokens: tokens, cfg: cfg, incoming: filepath.Join(s.root, "incoming"), state: filepath.Join(s.root, "api-state"), job: make(chan struct{}, 1), rates: map[string]apiRate{}}
 	a.bcryptJobs = make(chan struct{}, 4)
+	a.tickets = make(map[[32]byte]uploadTicket)
+	a.uploadSlot = make(chan struct{}, 1)
 	a.viewerCache = make(map[[32]byte]time.Time)
 	if _, err := rand.Read(a.cacheSecret[:]); err != nil {
 		return nil, err
@@ -288,6 +294,9 @@ func (w *apiResponse) WriteHeader(s int) {
 		w.ResponseWriter.WriteHeader(s)
 	}
 }
+
+// Unwrap lets http.ResponseController reach the connection (upload deadlines).
+func (w *apiResponse) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 func (w *apiResponse) Write(p []byte) (int, error) {
 	if w.status == 0 {
 		w.WriteHeader(200)
@@ -374,6 +383,12 @@ func (a *apiServer) ServeHTTP(out http.ResponseWriter, r *http.Request) {
 		a.authorize(w, r, id)
 		return
 	}
+	// One-time upload tickets: their own credential, never a management key.
+	if r.URL.Path == "/_upload" && r.Context().Value(internalCallKey{}) == nil {
+		operation = "upload"
+		a.serveUpload(w, r, id, &agent)
+		return
+	}
 	// MCP is the only public management interface. The release core under
 	// /_api/v1 answers only in-process calls from the MCP adapter.
 	if r.URL.Path != "/mcp" && r.Context().Value(internalCallKey{}) == nil {
@@ -415,7 +430,20 @@ func (a *apiServer) ServeHTTP(out http.ResponseWriter, r *http.Request) {
 			methodError(w, id, "GET")
 			return
 		}
-		apiJSON(w, 200, map[string]any{"namespace": a.cfg.Namespace, "agent": identity.Label, "limits": map[string]any{"max_upload_bytes": a.cfg.MaxUploadBytes, "max_extract_bytes": a.cfg.MaxExtractBytes, "max_entries": a.cfg.MaxEntries, "min_free_bytes": a.cfg.MinFreeBytes, "min_free_inodes": minFreeInodes, "publish_limit": a.cfg.PublishLimit, "publish_window_seconds": 3600, "request_timeout_seconds": 170}})
+		// "limits" applies to publish_archive/publish_files; "upload" to begin_upload.
+		mcpLimits := a.mcpLimits()
+		apiJSON(w, 200, map[string]any{"namespace": a.cfg.Namespace, "agent": identity.Label,
+			"limits": map[string]any{"max_upload_bytes": mcpLimits.MaxUploadBytes, "max_extract_bytes": mcpLimits.MaxExtractBytes, "max_entries": mcpLimits.MaxEntries, "min_free_bytes": a.cfg.MinFreeBytes, "min_free_inodes": minFreeInodes, "publish_limit": a.cfg.PublishLimit, "publish_window_seconds": 3600, "request_timeout_seconds": 170},
+			"upload": map[string]any{"max_bytes": a.cfg.MaxUploadBytes, "max_extract_bytes": a.cfg.MaxExtractBytes, "max_entries": a.cfg.MaxEntries, "ticket_seconds": int(uploadTicketTTL / time.Second), "max_pending_tickets": uploadMaxPending}})
+		return
+	}
+	if r.URL.Path == "/_api/v1/uploads" {
+		operation = "begin_upload"
+		if r.Method != "POST" {
+			methodError(w, id, "POST")
+			return
+		}
+		a.beginUpload(w, r, id, identity)
 		return
 	}
 	if r.URL.Path == "/_api/v1/releases" {
@@ -610,12 +638,12 @@ func validIdempotency(s string) bool {
 	}
 	return true
 }
-func (a *apiServer) diskOK(needed uint64) bool {
+func (a *apiServer) diskOK(needed uint64, limits apiConfig) bool {
 	var st syscall.Statfs_t
 	if syscall.Statfs(a.incoming, &st) != nil {
 		return false
 	}
-	return apiDiskAvailable(st, a.cfg, needed)
+	return apiDiskAvailable(st, limits, needed)
 }
 
 // Preserve inode headroom as well as bytes: an archive of empty files must not
@@ -643,6 +671,7 @@ func apiDiskAvailable(st syscall.Statfs_t, cfg apiConfig, needed uint64) bool {
 	return true
 }
 func (a *apiServer) upload(w http.ResponseWriter, r *http.Request, id string, identity agentIdentity) {
+	limits := a.mcpLimits()
 	key := r.Header.Get("Idempotency-Key")
 	if !validIdempotency(key) {
 		apiError(w, 400, id, "a URL-safe Idempotency-Key of 16 to 128 characters is required")
@@ -666,12 +695,12 @@ func (a *apiServer) upload(w http.ResponseWriter, r *http.Request, id string, id
 	ctx, cancel := context.WithTimeout(r.Context(), 170*time.Second)
 	defer cancel()
 	// Reserve for the spool, extracted source, publisher copy, and sidecars.
-	needed := uint64(a.cfg.MaxUploadBytes) + uint64(a.cfg.MaxExtractBytes)*4
-	if !a.diskOK(needed) {
+	needed := uint64(limits.MaxUploadBytes) + uint64(limits.MaxExtractBytes)*4
+	if !a.diskOK(needed, limits) {
 		apiError(w, 507, id, "insufficient free disk space")
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, a.cfg.MaxUploadBytes+65536)
+	r.Body = http.MaxBytesReader(w, r.Body, limits.MaxUploadBytes+65536)
 	_, params, contentErr := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if contentErr != nil || params["boundary"] == "" {
 		apiError(w, 400, id, "expected multipart metadata then artifact")
@@ -716,13 +745,8 @@ func (a *apiServer) upload(w http.ResponseWriter, r *http.Request, id string, id
 	}
 	defer os.Remove(f.Name())
 	defer f.Close()
-	digestMetadata := meta
-	digestMetadata.Password = ""
-	canonical, _ := json.Marshal(digestMetadata)
-	h := sha256.New()
-	h.Write(canonical)
-	h.Write([]byte{0})
-	reader := &archiveBudgetReader{r: p, left: a.cfg.MaxUploadBytes, ctx: ctx}
+	h := spoolDigest(meta)
+	reader := &archiveBudgetReader{r: p, left: limits.MaxUploadBytes, ctx: ctx}
 	_, e = io.Copy(io.MultiWriter(f, h), reader)
 	if e != nil {
 		a.bodyError(w, id, e)
@@ -747,8 +771,25 @@ func (a *apiServer) upload(w http.ResponseWriter, r *http.Request, id string, id
 		apiError(w, 400, id, "unexpected data after multipart body")
 		return
 	}
-	digest := hex.EncodeToString(h.Sum(nil))
-	kh := sha256.Sum256([]byte(identity.ID + "\x00" + key))
+	a.publishSpool(ctx, w, id, identity.ID, key, meta, policy, f, hex.EncodeToString(h.Sum(nil)), limits)
+}
+
+// spoolDigest starts the idempotency digest: canonical metadata without the
+// password (compared separately against its bcrypt hash), then the spool bytes.
+func spoolDigest(meta uploadMetadata) hash.Hash {
+	meta.Password = ""
+	canonical, _ := json.Marshal(meta)
+	h := sha256.New()
+	h.Write(canonical)
+	h.Write([]byte{0})
+	return h
+}
+
+// publishSpool turns a fully received private spool into a release: the
+// idempotency record, extraction, publisher validation and activation are the
+// same for MCP publishes and ticket uploads. The caller holds the publisher slot.
+func (a *apiServer) publishSpool(ctx context.Context, w http.ResponseWriter, id, agentID, key string, meta uploadMetadata, policy accessPolicy, f *os.File, digest string, limits apiConfig) {
+	kh := sha256.Sum256([]byte(agentID + "\x00" + key))
 	rp := filepath.Join(a.state, hex.EncodeToString(kh[:])+".json")
 	old, e := readReplay(rp)
 	if e == nil && time.Since(old.Created) <= 24*time.Hour {
@@ -800,7 +841,7 @@ func (a *apiServer) upload(w http.ResponseWriter, r *http.Request, id string, id
 		return
 	}
 	defer removeStage(dir)
-	source, e := extractArtifact(ctx, f, dir, a.cfg)
+	source, e := extractArtifact(ctx, f, dir, limits)
 	if e != nil {
 		a.bodyError(w, id, e)
 		return
@@ -822,7 +863,7 @@ func (a *apiServer) upload(w http.ResponseWriter, r *http.Request, id string, id
 		apiError(w, 408, id, "request cancelled or timed out")
 		return
 	}
-	if !a.diskOK(uint64(a.cfg.MaxExtractBytes) * 3) {
+	if !a.diskOK(uint64(limits.MaxExtractBytes)*3, limits) {
 		apiError(w, 507, id, "insufficient free disk space")
 		return
 	}

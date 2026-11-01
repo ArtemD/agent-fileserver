@@ -8,8 +8,10 @@ Instructions for coding agents and humans working on this repository.
 Agent Fileserver: a single-owner static file publisher whose **only management
 interface is remote MCP** (`/mcp`, Streamable HTTP, stateless). It runs **only
 as Docker Compose**: an official Caddy container serves release bytes and routes
-`/mcp` over a Unix socket to the Go service container, which has no network and
-calls the shared release core in-process. There is no REST API, web UI, upload
+`/mcp` and the ticket-only `PUT /_upload` over a Unix socket to the Go service
+container, which has no network and calls the shared release core in-process.
+Upload tickets are minted only by the `begin_upload` MCP tool; `PUT /_upload`
+is neither a management API nor a form. There is no REST API, web UI, upload
 form, Python client, native installer or CLI publishing. The `admin` compose
 service only administers keys (`token create|list|revoke`).
 
@@ -90,7 +92,9 @@ A change is not finished until **all** of these are updated in the same commit:
 
 **Always**
 - MCP stays the only management interface. New capabilities are MCP tools that
-  call the shared core in-process; Caddy routes only `/mcp`.
+  call the shared core in-process; Caddy routes only `/mcp` and the
+  ticket-only `PUT /_upload`. Upload tickets are minted only by the
+  `begin_upload` MCP tool.
 - Fail closed: a missing or invalid access policy denies access; reject
   traversal, links, special files, secrets and limit violations.
 - Redact secrets: never log request bodies, passwords, uploaded content, raw MCP

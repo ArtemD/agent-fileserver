@@ -72,7 +72,18 @@ for path in docs:
 caddy = read("deploy/caddy/routes.caddy")
 management = re.findall(r"@management path (.*)", caddy)
 if management != ["/mcp"]:
-    fail(f"Caddy must route only /mcp to the service, found: {management}")
+    fail(f"Caddy must route /mcp as the only management route, found: {management}")
+upload = re.findall(r"@upload path (.*)", caddy)
+if upload != ["/_upload"]:
+    fail(f"Caddy must route only the ticket-only /_upload besides /mcp, found: {upload}")
+if len(re.findall(r"^\s*reverse_proxy\s", caddy, re.M)) != 2 \
+        or len(re.findall(r"^\s*reverse_proxy unix//run/agent-fileserver-api/http\.sock\b", caddy, re.M)) != 2:
+    fail("Caddy must reverse_proxy exactly twice (/mcp and /_upload), both to the API socket")
+if "forward_auth unix//run/agent-fileserver-api/http.sock" not in caddy:
+    fail("Caddy release authorization must use forward_auth to the API socket")
+upload_block = re.search(r"handle @upload \{(.*?)\n\t\}", caddy, re.S)
+if not upload_block or not re.search(r"request_body\s*\{\s*max_size\s+\S+", upload_block.group(1)):
+    fail("the /_upload handle must cap the request body with request_body max_size")
 if "request>headers>X-Auth-Token replace REDACTED" not in caddy:
     fail("Caddy access log must redact X-Auth-Token")
 

@@ -51,6 +51,21 @@ route {
 		}
 	}
 
+	# One-time upload tickets minted by the begin_upload MCP tool. The service
+	# accepts only PUT with a ticket here; management keys are refused.
+	@upload path /_upload
+	handle @upload {
+		request_body {
+			max_size {$FSERVER_MAX_UPLOAD_BYTES:1073741824}
+		}
+		reverse_proxy unix//run/agent-fileserver-api/http.sock {
+			header_up X-Fserver-Client-IP {client_ip}
+			transport http {
+				response_header_timeout 15m
+			}
+		}
+	}
+
 	# No internal authorization, policy, credential, or filesystem paths.
 	@private path /_api /_api/* /_internal /_internal/* /credentials /credentials/* /policies /policies/* /staging /staging/* /manifests /manifests/* /incoming /incoming/* /api-state /api-state/* /trash /trash/*
 	respond @private "Not Found" 404

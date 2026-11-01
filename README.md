@@ -10,8 +10,8 @@
 Let your AI agents publish static websites, prototypes, PDFs and files to your
 own server over **remote MCP**, and get back a fresh, unguessable URL to share.
 
-- **MCP is the only interface.** No web UI, no REST API, no upload form, no SSH publishing.
-- Publish a few files or **one ZIP/tar.gz for a whole website**.
+- **MCP is the only management interface.** No web UI, no REST API, no upload form, no SSH publishing.
+- Publish a few files or **one ZIP/tar.gz for a whole website**, and **big files (up to 1 GiB by default)** through a one-time upload ticket that only the `begin_upload` MCP tool can mint.
 - Fresh unlisted URL per immutable release; optional visitor password.
 - List, inspect, download (≤ 1 MiB), delete, and set/reset/remove passwords.
 - Docker Compose: Caddy serves bytes; a sandboxed Go service (no network) handles MCP on a private Unix socket.
@@ -24,6 +24,7 @@ own server over **remote MCP**, and get back a fresh, unguessable URL to share.
 
 ```text
 Agent (Claude, …) ──MCP + key──▶ Caddy ──/mcp──▶ Go service ──▶ publisher ──▶ releases
+Agent sandbox ──PUT + ticket──▶ Caddy ──/_upload──▶ Go service (same publisher)
 Visitors ───────────────GET────▶ Caddy ──policy check──▶ static bytes
 ```
 
@@ -136,9 +137,27 @@ Just ask your agent, for example:
 | `list_releases` / `release_info` | Find and inspect releases (newest 1,000) |
 | `publish_files` | A few UTF-8 or base64 files |
 | `publish_archive` | One base64 ZIP, tar or tar.gz; unpacked server-side |
+| `begin_upload` | One-time ticket and `curl` command to upload a large file or archive (up to 1 GiB by default) |
 | `download_release` | Inline base64 download, up to 1 MiB |
 | `delete_release` | Permanently delete a release |
 | `set_password` / `reset_password` / `remove_password` | Visitor access (username `viewer`) |
+
+### Publish a big file or site
+
+MCP sends files as base64 inside the request, which is too heavy for big files.
+For those, attach the file in Claude (claude.ai, Claude Desktop, Cowork) and ask
+*"publish this to fserver"*. Claude calls `begin_upload`, which returns a
+short-lived, single-use ticket and a ready `curl` command, and runs it in its
+code sandbox. The management key never leaves the connector; the sandbox sees
+only the ticket. The file can be a video, a PDF, or a ZIP/tar.gz site, up to
+1 GiB by default.
+
+Requirements in Claude: **Settings → Capabilities** must have code execution
+and network egress enabled. If egress uses an allowlist, add your server's
+domain. From Claude Code or any shell with curl, the same flow works: the agent
+calls `begin_upload` and runs the returned command. The base64 tools
+(`publish_files`, `publish_archive`) remain for small generated content.
+Details and limits: [MCP reference](docs/MCP.md#large-uploads).
 
 Every publish needs an `idempotency_key`; retries reuse the same key and exact
 payload. Each publish creates a new URL — nothing is overwritten in place.
@@ -150,14 +169,19 @@ More: [MCP reference](docs/MCP.md).
   A visitor password protects the whole release, assets included.
 - Static output only — build/export elsewhere. No backend, SSR or uploaded commands.
   Files are served by path; query strings (`?utm_source=…`, page state) are ignored.
-- 100 MiB archive and extracted size, 5,000 objects, 30 publishes/hour/key.
-  MCP sends files as base64 inside the request, so your client may hit its own
-  message limits well before 100 MiB.
+- Through MCP (base64): 100 MiB archive and extracted size, 5,000 objects. Your
+  client may hit its own message limits well before 100 MiB.
+- Through `begin_upload`: 1 GiB upload, 1 GiB extracted, 50,000 objects by
+  default (configurable in `.env`; ZIP is limited to 65,534 entries).
+- 30 publishes/hour/key either way.
 - Traversal, links, unsafe names, secrets (`.env`, `.pem`, `.key`, …), scripts
   and corrupt archives are rejected. This is not content-based secret scanning.
 - All releases on one hostname share a browser origin: only publish JavaScript
   you trust, and never reuse company production login cookies here.
 - Deletion is permanent at the origin; it can't recall downloads or caches.
+- Upload tickets are 256-bit, single-use, expire after 30 minutes, work only on
+  `PUT /_upload` and are revoked with the key that minted them. Management keys
+  are refused there.
 - Containers run as non-root with read-only filesystems and all capabilities
   dropped (Caddy keeps only the one its official binary needs to start); the
   MCP service has no network at all and cannot change keys. See [architecture/security](docs/ARCHITECTURE.md) and [SECURITY.md](SECURITY.md).

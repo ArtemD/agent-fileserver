@@ -31,12 +31,16 @@ request("/robots.txt?" + tag, extra=(
 ))
 request("/?" + tag)
 request("/?" + tag, "PUT")
+# An upload ticket travels only in Authorization; the log must redact it.
+request("/_upload", "PUT", extra=(
+    "-H", "Authorization: Bearer upl_SYNTHETIC_UPLOAD_TICKET_NOT_REAL",
+))
 with ThreadPoolExecutor(max_workers=12) as pool:
     list(pool.map(lambda n: request("/?" + tag + "&burst=" + str(n)), range(100)))
 
 raw = subprocess.check_output([*AS_ROOT, "cat", LOG], text=True)
 entries = [json.loads(line) for line in raw.splitlines() if tag in line]
-assert len(entries) == 103, f"Expected 103 unsampled requests, got {len(entries)}"
+assert len(entries) == 104, f"Expected 104 unsampled requests, got {len(entries)}"
 assert {200, 404, 405}.issubset({e["status"] for e in entries})
 assert len([e for e in entries if "&burst=" in e["request"]["uri"]]) == 100
 for entry in entries:
@@ -49,6 +53,7 @@ probe = next(e for e in entries if e["status"] == 200)
 headers = probe["request"]["headers"]
 assert headers["Referer"] == ["https://example.invalid/logging-probe"]
 assert "SYNTHETIC_SECRET_NOT_A_REAL_CREDENTIAL" not in json.dumps(entries)
+assert "SYNTHETIC_UPLOAD_TICKET_NOT_REAL" not in json.dumps(entries)
 assert "SYNTHETIC_COOKIE_NOT_REAL" not in json.dumps(entries)
 assert "SYNTHETIC_TOKEN_HEADER_NOT_REAL" not in json.dumps(entries)
 assert headers["X-Auth-Token"] in ("REDACTED", ["REDACTED"]), headers.get("X-Auth-Token")
@@ -61,6 +66,6 @@ if BASE.startswith("https://"):
 
 mode = subprocess.check_output([*AS_ROOT, "stat", "-c", "%a", LOG], text=True).strip()
 assert mode == "600", mode
-print("PASS: 103/103 requests logged, including all 100 burst requests")
+print("PASS: 104/104 requests logged, including all 100 burst requests")
 print("PASS: timestamps, URL/query, methods, IPs, UA, referrer, status, bytes, latency")
 print("PASS: credentials redacted and access log private (0600)")

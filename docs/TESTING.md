@@ -72,12 +72,16 @@ key. Shared helper: `tests/mcp_fixture.py`.
   publish/delete.
 - `mcp_live.py` exercises every tool through Caddy with both key headers,
   visitor passwords with and without a query string,
-  revocation, and that no non-MCP management route is reachable. With
+  revocation, and that no non-MCP management route is reachable. It also tests
+  upload tickets: an archive and a single-file upload through Caddy with the
+  returned `curl` command, ticket reuse, refusal of management keys on
+  `/_upload` and of tickets on `/mcp`. With
   `FSERVER_TEST_LARGE=1` it also streams a 100 MiB archive as base64 JSON and
-  checks that its download is refused (inline limit 1 MiB).
+  checks that its download is refused (inline limit 1 MiB), and uploads a
+  256 MiB single file through `begin_upload` and checks the round trip.
 - `access_logging.py` checks unsampled logs, secret redaction (including
-  `X-Auth-Token`) and, over public HTTPS, that a caller cannot forge its IP via
-  `X-Forwarded-For`. It reads `logs/access.json` with sudo (`FSERVER_TEST_LOG`).
+  `X-Auth-Token` and an upload ticket in `Authorization`) and, over public
+  HTTPS, that a caller cannot forge its IP via `X-Forwarded-For`. It reads `logs/access.json` with sudo (`FSERVER_TEST_LOG`).
 
 Knobs: `FSERVER_TEST_BASE` (default `http://localhost:8000`) and
 `FSERVER_TEST_RESOLVE=HOST:443:PUBLIC_IP`, which makes curl use the real public
@@ -91,8 +95,9 @@ releases) runs a **workflows** job (actionlint, with shellcheck on `run:` blocks
 a **commits** job (`check_commits.py` on the pushed range), the
 unit/static checks on Go 1.26 and 1.27, then an **integration** job that builds
 and starts the real compose stack and runs every live test above against it,
-including the 100 MiB MCP upload. Superseded pull-request runs are cancelled;
-runs for commits on `main` and for tags always finish.
+including the 100 MiB MCP upload and the 256 MiB ticket upload. Superseded
+pull-request runs are cancelled; runs for commits on `main` and for tags always
+finish.
 
 `.github/workflows/security.yml` runs on push, pull requests and weekly:
 `govulncheck` against the Go version of the Dockerfile build image, and CodeQL

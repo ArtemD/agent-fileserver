@@ -27,6 +27,7 @@ import (
 
 const (
 	mcpMaxArchiveBytes = 100 << 20
+	mcpMaxExtractBytes = 100 << 20
 	mcpJSONOverhead    = 6 << 20
 	mcpMaxBodyBytes    = 140 << 20
 	mcpInlineBytes     = 1 << 20
@@ -41,6 +42,16 @@ const (
 var errMCPArrayLimit = errors.New("MCP array entry limit exceeded")
 
 type mcpRequestKey struct{}
+
+// mcpLimits caps base64 publishing below the ticket-upload limits: large JSON
+// is held in memory several times, so MCP inline publishing stays at 100 MiB.
+func (a *apiServer) mcpLimits() apiConfig {
+	l := a.cfg
+	l.MaxUploadBytes = min(l.MaxUploadBytes, int64(mcpMaxArchiveBytes))
+	l.MaxExtractBytes = min(l.MaxExtractBytes, int64(mcpMaxExtractBytes))
+	l.MaxEntries = min(l.MaxEntries, mcpMaxFiles)
+	return l
+}
 
 func (a *apiServer) mcpBodyLimit() int64 {
 	n := min(a.cfg.MaxUploadBytes, int64(mcpMaxArchiveBytes))
@@ -185,7 +196,7 @@ func (a *apiServer) newMCPHandler() http.Handler {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	server := mcp.NewServer(&mcp.Implementation{Name: "agent-fileserver", Version: buildVersion}, &mcp.ServerOptions{Logger: logger,
 		Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}},
-		Instructions: "Publish clean static files only. Never pass management bearer keys as tool arguments. Publish retries require the same explicit idempotency_key and bytes. Downloads are inline only, up to 1 MiB; this is not a client file-attachment guarantee."})
+		Instructions: "Publish clean static files only. Never pass management bearer keys as tool arguments. Publish retries require the same explicit idempotency_key and bytes. Downloads are inline only, up to 1 MiB; this is not a client file-attachment guarantee. For files too large to pass inline (attachments, big sites, videos), call begin_upload and PUT the raw bytes with the returned curl command."})
 	str := func() map[string]any { return map[string]any{"type": "string"} }
 	token := func() map[string]any { return map[string]any{"type": "string", "pattern": "^[A-Za-z0-9_-]+$"} }
 	publish := func() map[string]any {
@@ -194,7 +205,7 @@ func (a *apiServer) newMCPHandler() http.Handler {
 			"idempotency_key": map[string]any{"type": "string", "minLength": 16, "maxLength": 128, "pattern": "^[A-Za-z0-9_-]+$"}}
 	}
 	add := func(name, description string, schema any, readOnly, destructive, idempotent bool) {
-		openWorld := name == "publish_files" || name == "publish_archive" || name == "remove_password"
+		openWorld := name == "publish_files" || name == "publish_archive" || name == "remove_password" || name == "begin_upload"
 		server.AddTool(&mcp.Tool{Name: name, Description: description, InputSchema: schema,
 			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: readOnly, DestructiveHint: &destructive, IdempotentHint: idempotent, OpenWorldHint: &openWorld}},
 			func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -216,6 +227,11 @@ func (a *apiServer) newMCPHandler() http.Handler {
 	p := publish()
 	p["archive_base64"] = map[string]any{"type": "string", "contentEncoding": "base64", "description": "Standard padded base64 ZIP, tar, or tar.gz archive; decoded limit is min(server limit, 100 MiB). JSON and base64 overhead are bounded."}
 	add("publish_archive", "Publish a static ZIP/tar/tar.gz to the PUBLIC INTERNET by default unless a visitor password is supplied. Uses the shared safe publisher. Explicit caller idempotency_key required; reuse exact arguments on retry.", mcpSchema(p, "archive_base64", "idempotency_key"), false, false, true)
+	u := publish()
+	u["size"] = map[string]any{"type": "integer", "minimum": 1, "maximum": a.cfg.MaxUploadBytes, "description": "Exact byte length of the file (e.g. stat -c %s FILE)."}
+	u["sha256"] = map[string]any{"type": "string", "pattern": "^[0-9a-f]{64}$", "description": "Lowercase hex SHA-256 of the file (e.g. sha256sum FILE)."}
+	u["filename"] = map[string]any{"type": "string", "minLength": 1, "maxLength": 255, "description": "Publish the bytes as ONE downloadable file with this name (any type). Omit for a ZIP, tar or tar.gz website archive."}
+	add("begin_upload", fmt.Sprintf("Start publishing a file too large to pass inline (up to %d MiB): returns a one-time HTTPS PUT URL and Authorization header, valid 30 minutes for one attempt. Then send the raw file from a shell, e.g. Claude's code sandbox, by running the returned command with FILE replaced by the path. The PUT response is the release, PUBLIC ON THE INTERNET unless a visitor password is supplied. Without filename the file must be a ZIP/tar/tar.gz site; with filename it is one download. To retry, call begin_upload again with the same idempotency_key.", a.cfg.MaxUploadBytes>>20), mcpSchema(u, "size", "sha256", "idempotency_key"), false, false, false)
 	p = publish()
 	p["files"] = map[string]any{"type": "array", "minItems": 1, "maxItems": min(a.cfg.MaxEntries, mcpMaxFiles), "items": mcpSchema(map[string]any{
 		"path": str(), "text": map[string]any{"type": "string", "description": "UTF-8 contents; specify exactly one of text or content_base64."},
@@ -401,6 +417,14 @@ func (a *apiServer) mcpCall(ctx context.Context, name string, raw json.RawMessag
 	if name == "publish_archive" || name == "publish_files" {
 		return a.mcpPublish(ctx, parent, name, raw)
 	}
+	if name == "begin_upload" {
+		var args beginUploadRequest
+		if mcpDecode(raw, &args) != nil {
+			return mcpFailure("invalid begin_upload arguments")
+		}
+		b, _ := json.Marshal(args)
+		return mcpAPIResult(a.mcpDispatch(ctx, parent, "POST", "/_api/v1/uploads", bytes.NewReader(b), "application/json", "", mcpOutputBytes))
+	}
 	var args struct {
 		Token    string `json:"token,omitempty"`
 		Password string `json:"password,omitempty"`
@@ -557,7 +581,8 @@ func (a *apiServer) mcpPublish(ctx context.Context, parent *http.Request, name s
 		if args.ArchiveBase64 != nil || len(args.Files) == 0 || len(args.Files) > min(a.cfg.MaxEntries, mcpMaxFiles) {
 			return mcpFailure("invalid files arguments or entry limit exceeded")
 		}
-		if !a.diskOK(uint64(a.cfg.MaxUploadBytes) + uint64(a.cfg.MaxExtractBytes)*4) {
+		limits := a.mcpLimits()
+		if !a.diskOK(uint64(limits.MaxUploadBytes)+uint64(limits.MaxExtractBytes)*4, limits) {
 			return mcpFailure("insufficient free disk space")
 		}
 		f, err := os.CreateTemp(a.incoming, "api-upload-mcp-")
@@ -637,7 +662,7 @@ func (a *apiServer) mcpWriteFiles(ctx context.Context, f *os.File, files []mcpFi
 			source = base64.NewDecoder(base64.StdEncoding.Strict(), strings.NewReader(b))
 		}
 		total += size
-		if size < 0 || total > a.cfg.MaxExtractBytes || total > limit {
+		if size < 0 || total > a.mcpLimits().MaxExtractBytes || total > limit {
 			return errArchiveLimit
 		}
 		if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0600, Size: size, Typeflag: tar.TypeReg}); err != nil {
