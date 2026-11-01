@@ -40,6 +40,7 @@ themselves. Details: docs/TESTING.md.
 
 | Path | What |
 |---|---|
+| `CLAUDE.md` | Imports this file so Claude Code loads the same rules |
 | `CHANGELOG.md` | Keep a Changelog record per version; release notes are taken from it |
 | `compose.yaml`, `compose.direct.yaml`, `.env.example` | The deployment: services, hardening, volumes, config |
 | `Dockerfile` | Go service image (UID 10001); Caddy uses the official image |
@@ -92,6 +93,11 @@ A change is not finished until **all** of these are updated in the same commit:
    is not documented or not in CI, a removed interface is still mentioned, the
    container hardening weakens, or a forbidden file is tracked. Extend that
    script whenever you add a new invariant.
+6. **Errors explain themselves.** Every error string returned over HTTP or MCP
+   has a next-step `hint` in `errors.go` that says what happened, whether a retry
+   is safe and what to do instead; refusals about one file also carry `entry` and
+   `reason`. `TestEveryErrorHasHint` fails on a string without a hint. Never echo
+   server paths, request content or secrets in an error.
 
 ## Boundaries
 
@@ -124,7 +130,8 @@ A change is not finished until **all** of these are updated in the same commit:
 On an exe.dev VM: run `scripts/exe-dev-up.sh` from the repository root, then
 tell the owner to run, from their own computer, `ssh exe.dev share port VMNAME 8000`
 and `ssh exe.dev share set-public VMNAME`. Elsewhere: `cp .env.example .env`,
-set `FSERVER_DOMAIN` and `FSERVER_MODE`, then `docker compose up -d --build --wait`
+set `FSERVER_DOMAIN` and `FSERVER_MODE`, then
+`FSERVER_VERSION=$(git describe --tags --always --dirty) docker compose up -d --build --wait`
 (direct mode adds `-f compose.direct.yaml`). Create keys only into a private
 file, never into chat, logs or the repository (see README "Create an agent key").
 Verify with `python3 tests/mcp_live.py`.
@@ -187,3 +194,39 @@ Also:
 - Run all checks first.
 - `git status` before committing: only intended source, doc and test files.
 - CI must be green on `main`; when it is red, fixing it comes before new work.
+
+## Working as the maintaining agent
+
+The owner says what the software should do; the agent drives the rest (issue,
+code, tests, docs, `main`, changelog, release) and reports the outcome with
+evidence. Push back when a request would weaken the security model or add
+surface for little gain, and record the decision in the issue.
+
+**Session start.** Read this file, `git fetch origin --tags`, and check the
+latest CI runs on `main` and the open issues. Red CI on `main` is fixed before
+anything else. Work on the branch the session names, keep `main` releasable,
+and land on `main` only after every check above passes.
+
+**Parallel agents.** One lead plans, reviews and is the only one who commits,
+pushes, tags or edits the changelog. Each helper gets a written scope and an
+explicit list of files it may edit; no two helpers share a file, and helpers
+never change git state or the shared live stack. The lead rereads the combined
+diff and reruns every check before committing.
+
+**When the environment blocks a step.** Never skip or weaken a failing check.
+- No `gh` CLI, so the `pre-push` hook cannot verify issues: confirm through the
+  GitHub API or MCP tools that each referenced issue exists and fills its form,
+  run `python3 scripts/check_commits.py -- origin/main..HEAD`, then push with
+  `git -c core.hooksPath=/dev/null push`. CI repeats the full check.
+- Tag pushes refused: release with a manual run of the Release workflow (step 5
+  of the Git section). If dispatching is refused too, ask the owner to start it
+  from the Actions tab with the version, and check the release afterwards.
+- Restricted sandboxes: start `dockerd` if it is not running. If the image
+  build cannot reach package mirrors through a TLS-intercepting proxy, or the
+  host has no IPv6 for the `edge` network, keep any workaround (a locally built
+  image, an IPv4-only compose override) outside the repository, use the
+  repository's binary and compose files otherwise, and say in the commit how
+  the live tests were run. Never commit such workarounds or relax hardening.
+
+**Reporting.** Say what was verified and how (commands and results), what was
+skipped and why, and what is still open.
