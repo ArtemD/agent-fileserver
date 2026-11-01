@@ -2,12 +2,44 @@ name: Release
 on:
   push:
     tags: ['v[0-9]+.[0-9]+.[0-9]+*']
+  # For maintainers (and agents) that cannot push tags: run on main with a
+  # version; the tag is created on the tested commit when the release is made.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to release as X.Y.Z (tagged vX.Y.Z on this commit of main)
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: A manual release runs only on main, for a new well-formed version
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          VERSION: ${{ inputs.version }}
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+        run: |
+          if [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "::error::manual releases run only on main, not $GITHUB_REF"
+            exit 1
+          fi
+          if ! printf '%s' "$VERSION" | grep -Eqx '[0-9]+\.[0-9]+\.[0-9]+'; then
+            echo "::error::version must be X.Y.Z, got '$VERSION'"
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags "$REPO_URL" "refs/tags/v$VERSION" >/dev/null; then
+            echo "::error::tag v$VERSION already exists; release a new version instead"
+            exit 1
+          fi
+
   tests:
+    needs: preflight
     permissions:
       contents: read
       issues: read
@@ -27,8 +59,14 @@ jobs:
       - name: Publish a GitHub release from the changelog, listing every commit and the issues it closed
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+          EVENT: ${{ github.event_name }}
+          VERSION_INPUT: ${{ inputs.version }}
         run: |
+          if [ "$EVENT" = workflow_dispatch ]; then
+            TAG="v$VERSION_INPUT"     # validated in preflight
+          else
+            TAG="$GITHUB_REF_NAME"
+          fi
           version=${TAG#v}
           # The tagged CHANGELOG.md must describe this exact version; refuse to
           # publish an undocumented release.
@@ -41,8 +79,8 @@ jobs:
             echo "::error file=CHANGELOG.md::no '## [$version]' section for tag $TAG"
             exit 1
           fi
-          previous=$(git describe --tags --abbrev=0 "$TAG^" 2>/dev/null || true)
-          range="${previous:+$previous..}$TAG"
+          previous=$(git describe --tags --abbrev=0 "$GITHUB_SHA^" 2>/dev/null || true)
+          range="${previous:+$previous..}$GITHUB_SHA"
           {
             cat "$RUNNER_TEMP/changelog.md"
             echo
@@ -56,5 +94,10 @@ jobs:
             echo "Upgrade: \`git fetch --tags && git checkout $TAG && FSERVER_VERSION=$TAG docker compose up -d --build --wait\`"
             echo "(see docs/INSTALL.md, Upgrades)."
           } > "$RUNNER_TEMP/notes.md"
-          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag \
+          if [ "$EVENT" = workflow_dispatch ]; then
+            set -- --target "$GITHUB_SHA"     # creates the tag on the tested commit
+          else
+            set -- --verify-tag
+          fi
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" "$@" \
             --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md"

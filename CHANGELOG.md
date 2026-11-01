@@ -23,7 +23,10 @@ Each release on GitHub also lists every commit and the issues it closed.
   `git describe`) into the image, and `server_info` returns `version`
   ([#16](https://github.com/ArtemD/agent-fileserver/issues/16)).
 - This changelog, and release notes taken from it
-  ([#16](https://github.com/ArtemD/agent-fileserver/issues/16)).
+  ([#16](https://github.com/ArtemD/agent-fileserver/issues/16)). A release can
+  also be cut by running the Release workflow on `main` with a version, which
+  creates the tag after the tests pass
+  ([#17](https://github.com/ArtemD/agent-fileserver/issues/17)).
 - Every error response, over HTTP and MCP, carries a `hint` with the next step
   for the agent, and archive and publisher refusals name the offending `entry`
   and the `reason` ([#11](https://github.com/ArtemD/agent-fileserver/issues/11)).

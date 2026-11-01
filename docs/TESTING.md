@@ -109,9 +109,10 @@ finish.
 `govulncheck` against the Go version of the Dockerfile build image, and CodeQL
 for Go, Python and the workflows themselves.
 
-`.github/workflows/release.yml` runs on a `vX.Y.Z` tag: it calls `test.yml`, and
-only if that passes publishes a GitHub release listing the commits and the issues
-they closed. Deployment stays a manual `git checkout vX.Y.Z` on the server
+`.github/workflows/release.yml` runs on a `vX.Y.Z` tag, or manually on `main`
+with a `version` input: it calls `test.yml`, and only if that passes publishes a
+GitHub release from the version's `CHANGELOG.md` section, listing the commits and
+the issues they closed (a manual run creates the tag on the tested commit). Deployment stays a manual `git checkout vX.Y.Z` on the server
 (docs/INSTALL.md); CI never connects to a server.
 
 ## What still needs a real environment

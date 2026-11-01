@@ -48,7 +48,7 @@ themselves. Details: docs/TESTING.md.
 | `scripts/check_consistency.py` | CI guard for drift, hardening, forbidden files and doc links |
 | `scripts/check_commits.py` | Commit guard: issue link, message format, noreply emails, docs in sync |
 | `.githooks/` | `commit-msg` and `pre-push` hooks that run `check_commits.py` |
-| `.github/workflows/` | `test.yml` (actionlint, commits, unit, live stack), `security.yml` (govulncheck, CodeQL, weekly), `release.yml` (tag → tests → GitHub release) |
+| `.github/workflows/` | `test.yml` (actionlint, commits, unit, live stack), `security.yml` (govulncheck, CodeQL, weekly), `release.yml` (tag push or manual run on main → tests → GitHub release) |
 | `.github/ISSUE_TEMPLATE/` | Bug and change issue forms; vulnerabilities go to private advisories |
 | `main.go`, `cli_management.go` | Key admin CLI, `serve`, `healthcheck`, stale-socket recovery |
 | `mcp.go` | MCP tools; the only management surface |
@@ -171,10 +171,15 @@ first", or a large or risky one the owner should review before it lands.
       links at the bottom. Commit it as `Release vX.Y.Z` with `Refs #N` for the
       release issue, or as part of the last change of the release.
    2. Tag that commit and push the tag:
-      `git tag -a vX.Y.Z -m "vX.Y.Z" && git push origin vX.Y.Z`.
-   3. `release.yml` reruns the full test suite on the tag, then publishes a
+      `git tag -a vX.Y.Z -m "vX.Y.Z" && git push origin vX.Y.Z`. Where tags
+      cannot be pushed (some cloud agent sandboxes drop tag pushes), run the
+      Release workflow manually on `main` instead, with input `version: X.Y.Z`
+      (GitHub Actions "Run workflow", or the API); it creates the tag on the
+      tested commit.
+   3. `release.yml` reruns the full test suite on that commit, then publishes a
       GitHub release whose notes are the changelog section plus every commit and
-      closed issue. It fails without a changelog section for the tag. Check that
+      closed issue. It fails without a changelog section for the version, and a
+      manual run also fails off `main`, for a malformed version or an existing tag. Check that
       the release appeared; never move or delete a published tag, release a new
       patch instead.
 
