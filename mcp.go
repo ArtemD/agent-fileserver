@@ -406,8 +406,13 @@ func mcpResult(value any, failed bool) *mcp.CallToolResult {
 }
 
 func mcpFailure(msg string) *mcp.CallToolResult {
-	return mcpResult(map[string]string{"error": msg}, true)
+	return mcpFailureDetail(msg, "", "")
 }
+func mcpFailureDetail(msg, entry, reason string) *mcp.CallToolResult {
+	return mcpResult(apiErrorBody{Error: msg, Entry: entry, Reason: reason, Hint: errorHints[msg]}, true)
+}
+
+const mcpTooLarge = "release download exceeds the 1 MiB inline MCP limit; MCP is the only management interface, so keep your own copy of large artifacts"
 
 func (a *apiServer) mcpCall(ctx context.Context, name string, raw json.RawMessage) *mcp.CallToolResult {
 	parent, ok := ctx.Value(mcpRequestKey{}).(*http.Request)
@@ -544,13 +549,12 @@ func (a *apiServer) mcpDownload(ctx context.Context, parent *http.Request, token
 	if json.Unmarshal(info.body.Bytes(), &v) != nil {
 		return mcpFailure("invalid release metadata")
 	}
-	tooLarge := "release download exceeds the 1 MiB inline MCP limit; MCP is the only management interface, so keep your own copy of large artifacts"
 	if v.Bytes > mcpInlineBytes {
-		return mcpFailure(tooLarge)
+		return mcpFailure(mcpTooLarge)
 	}
 	w := a.mcpDispatch(ctx, parent, "GET", target+"/download", nil, "", "", mcpInlineBytes)
 	if w.overflow {
-		return mcpFailure(tooLarge)
+		return mcpFailure(mcpTooLarge)
 	}
 	if w.status != 200 {
 		return mcpAPIResult(w)
@@ -592,7 +596,14 @@ func (a *apiServer) mcpPublish(ctx context.Context, parent *http.Request, name s
 		defer os.Remove(f.Name())
 		defer f.Close()
 		if err = a.mcpWriteFiles(ctx, f, args.Files); err != nil {
-			return mcpFailure("invalid files, paths, base64 or archive limits exceeded")
+			var ae *archiveError
+			if errors.As(err, &ae) {
+				return mcpFailureDetail("invalid files", ae.entry, ae.reason)
+			}
+			if errors.Is(err, errArchiveLimit) {
+				return mcpFailure("upload or archive limit exceeded")
+			}
+			return mcpFailureDetail("invalid files", "", "content_base64 is not valid standard padded base64")
 		}
 		if _, err = f.Seek(0, io.SeekStart); err != nil {
 			return mcpFailure("could not read staged files")
@@ -625,12 +636,21 @@ func (a *apiServer) mcpWriteFiles(ctx context.Context, f *os.File, files []mcpFi
 			return ctx.Err()
 		}
 		n := file.Path
-		if n == "" || n == "." || !utf8.ValidString(n) || len(n) > 1000 || path.Clean(n) != n || strings.HasPrefix(n, "/") || strings.ContainsAny(n, "\\\x00\r\n") || seen[n] || (file.Text == nil) == (file.ContentBase64 == nil) {
-			return errUnsafeArchive
+		if seen[n] {
+			return unsafeEntry(n, "duplicate path")
+		}
+		if (file.Text == nil) == (file.ContentBase64 == nil) {
+			return unsafeEntry(n, "give exactly one of text or content_base64")
+		}
+		if n == "" || n == "." || !utf8.ValidString(n) || len(n) > 1000 || path.Clean(n) != n || strings.HasPrefix(n, "/") || strings.ContainsAny(n, "\\\x00\r\n") {
+			return unsafeEntry(n, "path must be relative and canonical like 'css/site.css': no leading '/', no '//', no trailing '/', no backslash or control characters, at most 1000 bytes")
 		}
 		for _, part := range strings.Split(n, "/") {
-			if part == ".." || strings.HasPrefix(part, ".") {
-				return errUnsafeArchive
+			if part == ".." {
+				return unsafeEntry(n, "path traversal (..)")
+			}
+			if strings.HasPrefix(part, ".") {
+				return unsafeEntry(n, "names starting with '.' (dotfiles such as .env) are not published")
 			}
 		}
 		seen[n] = true
@@ -642,7 +662,7 @@ func (a *apiServer) mcpWriteFiles(ctx context.Context, f *os.File, files []mcpFi
 		var size int64
 		if file.Text != nil {
 			if !utf8.ValidString(*file.Text) {
-				return errUnsafeArchive
+				return unsafeEntry(n, "text is not valid UTF-8; send binary data as content_base64")
 			}
 			size, source = int64(len(*file.Text)), strings.NewReader(*file.Text)
 		} else {
@@ -650,7 +670,7 @@ func (a *apiServer) mcpWriteFiles(ctx context.Context, f *os.File, files []mcpFi
 			// Standard padded base64 only. Determine exact decoded size without
 			// allocating a decoded payload; the streaming decoder verifies bits.
 			if len(b)%4 != 0 || strings.ContainsAny(b, "\r\n") {
-				return errUnsafeArchive
+				return unsafeEntry(n, "content_base64 must be standard padded base64 without line breaks")
 			}
 			size = int64(base64.StdEncoding.DecodedLen(len(b)))
 			if strings.HasSuffix(b, "=") {
@@ -669,6 +689,10 @@ func (a *apiServer) mcpWriteFiles(ctx context.Context, f *os.File, files []mcpFi
 			return err
 		}
 		if _, err := io.Copy(tw, &archiveBudgetReader{r: source, left: size, ctx: ctx}); err != nil {
+			var corrupt base64.CorruptInputError
+			if errors.As(err, &corrupt) {
+				return unsafeEntry(n, "content_base64 is not valid standard base64")
+			}
 			return err
 		}
 	}

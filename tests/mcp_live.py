@@ -13,6 +13,8 @@ Credentials/passwords are private header files, not command arguments. Failures
 and subprocess output are deliberately redacted. No installed service changes.
 Upload tickets (begin_upload, then PUT /_upload) are exercised with small files;
 the ticket travels only in a private header file, never in argv.
+Flat tar.gz sites (also with ./ prefixes) publish through MCP and upload tickets,
+and refused archives return typed errors with entry/reason/hint (issue #11).
 Set FSERVER_TEST_LARGE=1 for an additional exact-100-MiB decoded archive check
 and a 256 MiB single-file upload/download round trip.
 """
@@ -44,6 +46,7 @@ TOKEN = re.compile(r"[A-Za-z0-9_-]{22}\Z")
 KEY = re.compile(r"[A-Za-z0-9_-]{43}\Z")
 HTML = b"<!doctype html><title>MCP fixture</title><h1>Published through MCP</h1>"
 CSS = b"body { color: #123456; background: white; }\n"
+ROBOTS = b"User-agent: *\nDisallow:\n"
 
 
 def png_chunk(kind, data):
@@ -268,6 +271,25 @@ class MCPLive(unittest.TestCase):
             return json.loads(contents[0]["text"])
         except (ValueError, KeyError, TypeError):
             raise LiveFailure("MCP tool returned invalid JSON text") from None
+
+    @classmethod
+    def tool_error(cls, name, arguments):
+        """Call a tool that must be refused; return the parsed JSON error body."""
+        result = cls.rpc("tools/call", {"name": name, "arguments": arguments})
+        check(isinstance(result, dict) and result.get("isError") is True,
+              "MCP tool was not refused: " + name)
+        contents = result.get("content", [])
+        check(len(contents) == 1 and contents[0].get("type") == "text",
+              "MCP error result shape mismatch")
+        try:
+            body = json.loads(contents[0]["text"])
+        except (ValueError, KeyError, TypeError):
+            raise LiveFailure("MCP error result is not JSON") from None
+        check(isinstance(body, dict) and isinstance(body.get("error"), str),
+              "MCP error body lacks an error string")
+        check(isinstance(body.get("hint"), str) and body["hint"].strip(),
+              "MCP error body lacks a hint: " + body["error"])
+        return body
 
     @classmethod
     def publish(cls, name="publish_files", *, password=None, args=None):
@@ -586,6 +608,72 @@ class MCPLive(unittest.TestCase):
         check(status == 405, "GET /_upload was not refused with 405")
         check(self.request("/_upload?x=1", "PUT", upload=path, anonymous=True)[0] == 404,
               "PUT /_upload with a query string was not refused with 404")
+
+    @staticmethod
+    def flat_tar_gz(prefix=""):
+        """A flat site as tar.gz; prefix "./" imitates `tar -czf site.tar.gz -C dir .`."""
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w:gz", format=tarfile.USTAR_FORMAT) as archive:
+            if prefix:
+                root = tarfile.TarInfo(".")
+                root.type, root.mode = tarfile.DIRTYPE, 0o755
+                archive.addfile(root)
+            for name, content in (("index.html", HTML), ("robots.txt", ROBOTS)):
+                info = tarfile.TarInfo(prefix + name)
+                info.size, info.mode = len(content), 0o644
+                archive.addfile(info, io.BytesIO(content))
+        return buffer.getvalue()
+
+    def test_18_flat_tar_gz_publish_archive(self):
+        # Issue #11: flat tar/tar.gz sites were refused as "malformed or unsafe".
+        for suffix, prefix in (("flat", ""), ("dotslash", "./")):
+            label = self.tag + "-tar-" + suffix
+            self.release_labels.add(label)
+            view = self.publish("publish_archive", args={
+                "label": label, "idempotency_key": secrets.token_urlsafe(24),
+                "archive_base64": base64.b64encode(self.flat_tar_gz(prefix)).decode()})
+            check(view.get("files") == 2, "flat tar.gz entry count mismatch: " + suffix)
+            self.public_bytes(view["token"], "index.html", HTML)
+            self.public_bytes(view["token"], "robots.txt", ROBOTS)
+            self.tool("delete_release", {"token": view["token"]})
+            self.releases.discard(view["token"])
+            check(self.request("/" + view["token"] + "/index.html", anonymous=True)[0] == 404,
+                  "deleted tar.gz release remains public: " + suffix)
+
+    def test_19_flat_tar_gz_upload_ticket(self):
+        data = self.flat_tar_gz("./")
+        path = self.write_fixture("upload-site.tar.gz", data)
+        ticket = self.begin_upload(len(data), hashlib.sha256(data).hexdigest())
+        status, _, body = self.put_upload(ticket, path)
+        view = self.uploaded_release(status, body, "flat tar.gz")
+        check(view.get("files") == 2, "uploaded flat tar.gz entry count mismatch")
+        self.public_bytes(view["token"], "index.html", HTML)
+        self.public_bytes(view["token"], "robots.txt", ROBOTS)
+        self.tool("delete_release", {"token": view["token"]})
+        self.releases.discard(view["token"])
+
+    def test_20_unsafe_archive_entry_is_named(self):
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w", format=tarfile.USTAR_FORMAT) as archive:
+            for name, content in (("index.html", HTML), ("../evil.html", HTML)):
+                info = tarfile.TarInfo(name)
+                info.size, info.mode = len(content), 0o644
+                archive.addfile(info, io.BytesIO(content))
+        error = self.tool_error("publish_archive", {
+            "label": self.tag + "-unsafe", "idempotency_key": secrets.token_urlsafe(24),
+            "archive_base64": base64.b64encode(buffer.getvalue()).decode()})
+        check(error["error"] == "unsafe archive entry", "unsafe entry error string mismatch")
+        check(error.get("entry") == "../evil.html", "unsafe entry was not named")
+        check(isinstance(error.get("reason"), str) and error["reason"].strip(),
+              "unsafe entry error lacks a reason")
+
+    def test_21_malformed_archive_has_reason_and_hint(self):
+        error = self.tool_error("publish_archive", {
+            "label": self.tag + "-malformed", "idempotency_key": secrets.token_urlsafe(24),
+            "archive_base64": base64.b64encode(b"this is not an archive " * 40).decode()})
+        check(error["error"] == "malformed archive", "malformed archive error string mismatch")
+        check(isinstance(error.get("reason"), str) and error["reason"].strip(),
+              "malformed archive error lacks a reason")
 
     @unittest.skipUnless(os.environ.get("FSERVER_TEST_LARGE") == "1",
                          "set FSERVER_TEST_LARGE=1 for the 256 MiB upload")

@@ -57,11 +57,13 @@ For an entire exported website, send **one** `publish_archive` call:
 }
 ```
 
-ZIP, tar, tar.gz are detected by bytes, not extension. ZIP contents may be flat
-or inside one wrapper directory; a single wrapper is unwrapped once. Existing
-tar packaging expects one root. Keep relative asset paths. Serve `index.html` at
-a directory root; otherwise the root intentionally returns 404. `spa: true`
-enables only extensionless client routes; it is not a global fallback.
+ZIP, tar, tar.gz are detected by bytes, not extension. All three accept the same
+layout: a flat site, or one wrapper directory that is unwrapped once (a lone
+file becomes a single-file release). One leading `./` is accepted, so
+`tar -C dist -czf site.tar.gz .` works. Keep relative asset paths. Serve
+`index.html` at a directory root; otherwise the root intentionally returns 404.
+`spa: true` enables only extensionless client routes; it is not a global
+fallback.
 
 **Public Internet by default.** Add `"password": "YOUR_VISITOR_PASSWORD"` to the
 same publish call to protect it before activation. Visitor username is `viewer`;
@@ -141,19 +143,62 @@ completes; check `list_releases` or retry with the same idempotency key.
 | Status | When |
 |---|---|
 | 201 | Published; the body is the release JSON |
-| 400 | Body shorter than declared, SHA-256 mismatch, malformed or unsafe archive, or `Content-Length` differs from the declared size |
+| 400 | Body shorter than declared, SHA-256 mismatch, `unsafe archive entry` or `malformed archive` (see Errors), or `Content-Length` differs from the declared size |
 | 401 | Ticket missing, unknown, used, expired or revoked, or a management key was sent (`WWW-Authenticate: Bearer`) |
 | 403 | Cross-origin `Origin` |
 | 404 | Another path, or a query string |
 | 405 | Method other than `PUT` |
 | 409 | Idempotency key reused with different bytes or metadata, or the earlier outcome is ambiguous |
 | 413 | `Content-Length` larger than declared, or archive limits (size, extracted size, entries) exceeded |
-| 422 | The publisher refused the content (hidden files, secrets, links, …), or `spa` without a root `index.html` |
+| 422 | `publisher refused artifact` (hidden files, secrets, links, …), or `spa` without a root `index.html` |
 | 429 | Another upload in progress, too many bad tickets from this IP (10/minute, shared with `/mcp`), or the publish rate limit (30/hour/key) |
 | 507 | Not enough free disk |
 
 The `filename` mode publishes one file of any type, for example a video or PDF,
 as a single download. The archive mode needs no `filename`.
+
+## Errors
+
+Every error, whether an HTTP status of 400 or more or an MCP result with
+`isError: true`, is a JSON object with a stable `error` string, a `hint` and,
+when the server has one, a `request_id`:
+
+```json
+{"error": "authentication required", "hint": "Send the agent key as 'Authorization: Bearer KEY', ...", "request_id": "..."}
+```
+
+`hint` is static, actionable text written for an AI agent: what to fix, which
+tool to call next, whether retrying with the same `idempotency_key` is safe, and
+whether a new upload ticket is needed. Branch on `error`, read `hint` for the
+next step, and quote `request_id` when you report a server-side problem.
+
+Errors about a specific file also carry `entry` (the file) and `reason` (why):
+
+- `unsafe archive entry`: a tar or ZIP member that is not allowed. `entry` is the
+  member name exactly as written in your archive, cut to 256 bytes.
+
+  ```json
+  {"error": "unsafe archive entry", "entry": "../evil.html", "reason": "path traversal (..)", "hint": "...", "request_id": "..."}
+  ```
+
+- `malformed archive`: the archive cannot be read. `entry` is absent, or names
+  the ZIP member whose data is corrupt or truncated.
+
+  ```json
+  {"error": "malformed archive", "reason": "tar end-of-archive marker missing or truncated", "hint": "...", "request_id": "..."}
+  ```
+
+- `publisher refused artifact` (422): the archive is well formed but the content
+  is not allowed. `entry` is relative to the site root.
+
+  ```json
+  {"error": "publisher refused artifact", "entry": ".env", "reason": "dotfiles and dotdirectories (including .env files) are forbidden", "hint": "...", "request_id": "..."}
+  ```
+
+- `invalid files`: a bad item in `publish_files`; `entry` is its `path`.
+
+Nothing is published when a publish fails for one of these reasons, so fix the
+named entry and retry with the same `idempotency_key`.
 
 ## Other tools
 

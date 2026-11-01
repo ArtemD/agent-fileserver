@@ -61,12 +61,18 @@ copying, content hashing and optional gzip/Brotli compression use the shared
 publisher. A valid private access policy is persisted before public activation.
 Missing, malformed or ambiguous policy state fails closed.
 
-Tar/tar.gz and ZIP input is bounded before publication. ZIPs may contain a flat
-site or one wrapper directory. Extraction never follows links or applies archive
+Tar/tar.gz and ZIP input is bounded before publication. Both may contain a flat
+site or one wrapper directory (one leading `./` is accepted in tar). Extraction never follows links or applies archive
 ownership/permissions. Traversal, absolute paths, duplicates, conflicting types,
 special files, encrypted/unsupported ZIPs, corrupt data and resource-limit
 violations are rejected. Known harmless Mac packaging metadata is the only
 documented omission; secrets are rejected, not silently removed.
+
+Refusals tell the caller what to fix without leaking server state. An `entry`
+echoed back is the caller's own archive member name, cut to 256 bytes and
+JSON-escaped, and `reason` and `hint` are static text from `errors.go`. Server
+paths, internal error text and failures outside the content policy are never
+echoed; they appear only as a generic hint plus the `request_id`.
 
 MCP JSON requires encoding binary data as base64; that overhead and JSON parsing
 cost are real. MCP request admission and body limits protect the service; the

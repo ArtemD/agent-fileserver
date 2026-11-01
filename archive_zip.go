@@ -194,22 +194,25 @@ func zipPath(name string, dir bool) (string, []string, error) {
 	}
 	if !utf8.ValidString(name) || name == "" || len(name) > 1024 ||
 		strings.ContainsAny(name, "\\:") || strings.HasPrefix(name, "/") {
-		return "", nil, errUnsafeArchive
+		return "", nil, unsafeEntry(name, "invalid path: absolute, empty, too long, not UTF-8, or contains a backslash or ':'")
 	}
 	parts := strings.Split(name, "/")
 	if len(parts) > 32 {
 		return "", nil, errArchiveLimit
 	}
 	for i, p := range parts {
-		if p == "" || p == "." || p == ".." {
-			return "", nil, errUnsafeArchive
+		if p == ".." {
+			return "", nil, unsafeEntry(name, "path traversal (..)")
+		}
+		if p == "" || p == "." {
+			return "", nil, unsafeEntry(name, "path is not canonical (empty or . component)")
 		}
 		if p == "Icon\r" && i == len(parts)-1 && !dir {
 			continue // the one explicitly recognized Mac control-character name
 		}
 		for _, c := range p {
 			if unicode.IsControl(c) {
-				return "", nil, errUnsafeArchive
+				return "", nil, unsafeEntry(name, "path contains a control character")
 			}
 		}
 	}
@@ -264,12 +267,15 @@ func copyZIPEntry(ctx context.Context, out io.Writer, r io.ReaderAt, f *zip.File
 func extractZIP(ctx context.Context, input io.ReaderAt, size int64, dst string, cfg apiConfig) (string, error) {
 	r := zipContextReaderAt{ctx, input}
 	directory, offsets, err := zipDirectory(r, size, cfg.MaxEntries)
+	if errors.Is(err, errArchiveLimit) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return "", err
+	}
 	if err != nil {
-		return "", errors.Join(errUnsafeArchive, err)
+		return "", errors.Join(malformedArchive("ZIP central directory is missing, truncated or corrupt, or the file is ZIP64, split, self-extracting or has trailing bytes"), err)
 	}
 	z, err := zip.NewReader(r, size)
 	if err != nil || len(z.File) != len(offsets) {
-		return "", errors.Join(errUnsafeArchive, err)
+		return "", errors.Join(malformedArchive("ZIP directory could not be read"), err)
 	}
 	type entry struct {
 		file      *zip.File
@@ -291,37 +297,44 @@ func extractZIP(ctx context.Context, input io.ReaderAt, size int64, dst string, 
 		case 3, 19: // Unix, macOS: reject unknown Unix inode types too.
 			typ := (f.ExternalAttrs >> 16) & 0170000
 			if typ != 0 && typ != 0100000 && typ != 0040000 {
-				return "", errUnsafeArchive
+				return "", unsafeEntry(f.Name, "only regular files and directories are allowed (no symbolic links, devices or sockets)")
 			}
 		case 0, 10, 14: // FAT, NTFS, VFAT: devices/reparse points are not files.
 			if f.ExternalAttrs&0x440 != 0 {
-				return "", errUnsafeArchive
+				return "", unsafeEntry(f.Name, "devices and reparse points are not allowed")
 			}
 		default:
-			return "", errUnsafeArchive
+			return "", unsafeEntry(f.Name, "made on an unsupported system; rebuild the ZIP with Info-ZIP, 7-Zip, Windows or macOS")
 		}
 		mode := f.Mode()
 		dir := mode.IsDir()
-		if (mode.Type() != 0 && mode.Type() != os.ModeDir) || dir != strings.HasSuffix(f.Name, "/") ||
-			f.Flags & ^uint16(0x080e) != 0 || (f.Method != zip.Store && f.Method != zip.Deflate) ||
-			!safeZIPExtra(f.Extra) {
-			return "", errUnsafeArchive
+		if (mode.Type() != 0 && mode.Type() != os.ModeDir) || dir != strings.HasSuffix(f.Name, "/") {
+			return "", unsafeEntry(f.Name, "only regular files and directories are allowed (no symbolic links, devices or sockets)")
+		}
+		if f.Flags&1 != 0 {
+			return "", unsafeEntry(f.Name, "encrypted ZIP entries are not supported; create the ZIP without a password")
+		}
+		if f.Flags & ^uint16(0x080e) != 0 || (f.Method != zip.Store && f.Method != zip.Deflate) {
+			return "", unsafeEntry(f.Name, "unsupported ZIP compression or flags; use plain deflate or store (zip -X, or zip without extra options)")
+		}
+		if !safeZIPExtra(f.Extra) {
+			return "", unsafeEntry(f.Name, "unsupported ZIP extra field (ZIP64 or a Unix link record); rebuild with 'zip -X'")
 		}
 		// Bits 1/2 are deflate options, not legal for stored data.
 		if f.Method == zip.Store && (f.Flags&6 != 0 || f.CompressedSize64 != f.UncompressedSize64) {
-			return "", errUnsafeArchive
+			return "", malformedEntry(f.Name, "stored entry sizes or flags are inconsistent")
 		}
 		name, parts, err := zipPath(f.Name, dir)
 		if err != nil {
 			return "", err
 		}
 		if typ, exists := seen[name]; exists && !(typ == 'i' && dir) {
-			return "", errUnsafeArchive
+			return "", unsafeEntry(f.Name, "duplicate or conflicting entry")
 		}
 		for j := 1; j < len(parts); j++ {
 			p := strings.Join(parts[:j], "/")
 			if seen[p] == 'f' {
-				return "", errUnsafeArchive
+				return "", unsafeEntry(f.Name, "parent path is a file")
 			}
 			if seen[p] == 0 {
 				seen[p] = 'i'
@@ -339,17 +352,20 @@ func extractZIP(ctx context.Context, input io.ReaderAt, size int64, dst string, 
 		}
 		total += f.UncompressedSize64
 		if dir && f.UncompressedSize64 != 0 {
-			return "", errUnsafeArchive
+			return "", unsafeEntry(f.Name, "directory entry has data")
 		}
 		end, err := zipLocalEnd(r, f, offsets[i], directory)
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return "", err
+		}
 		if err != nil {
-			return "", errors.Join(errUnsafeArchive, err)
+			return "", errors.Join(malformedEntry(f.Name, "local header does not match the central directory, or the entry is truncated"), err)
 		}
 		ranges = append(ranges, [2]int64{offsets[i], end})
 		macTree := parts[0] == "__MACOSX"
 		omit := (!dir && zipMacLeaf(parts[len(parts)-1])) || (macTree && dir)
 		if macTree && !dir && !omit {
-			return "", errUnsafeArchive
+			return "", unsafeEntry(f.Name, "unexpected file inside __MACOSX; remove the __MACOSX folder")
 		}
 		if !omit {
 			roots[parts[0]] = true
@@ -367,9 +383,12 @@ func extractZIP(ctx context.Context, input io.ReaderAt, size int64, dst string, 
 		}
 		end = span[1]
 	}
-	if end != directory || files == 0 {
+	if end != directory {
+		return "", malformedArchive("ZIP contains hidden, overlapping or unlisted data between entries")
+	}
+	if files == 0 {
 		// Empty, metadata-only and directory-only ZIPs do not publish anything.
-		return "", errUnsafeArchive
+		return "", malformedArchive("ZIP contains no files")
 	}
 	if err := noSymlinkAncestors(dst, false); err != nil {
 		return "", err
@@ -410,7 +429,10 @@ func extractZIP(ctx context.Context, input io.ReaderAt, size int64, dst string, 
 			closeErr = target.Close()
 		}
 		if err := errors.Join(copyErr, closeErr); err != nil {
-			return "", errors.Join(errUnsafeArchive, err)
+			if errors.Is(err, errArchiveLimit) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return "", err
+			}
+			return "", errors.Join(malformedEntry(e.name, "compressed data is corrupt, truncated or fails its CRC check"), err)
 		}
 	}
 	if len(roots) == 1 {

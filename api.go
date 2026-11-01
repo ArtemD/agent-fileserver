@@ -311,12 +311,6 @@ func apiJSON(w http.ResponseWriter, status int, v any) {
 		_ = json.NewEncoder(w).Encode(v)
 	}
 }
-func apiError(w http.ResponseWriter, status int, id, msg string) {
-	if status == 429 {
-		w.Header().Set("Retry-After", "60")
-	}
-	apiJSON(w, status, map[string]string{"error": msg, "request_id": id})
-}
 func requestID() string {
 	var b [16]byte
 	if _, e := rand.Read(b[:]); e != nil {
@@ -850,7 +844,14 @@ func (a *apiServer) publishSpool(ctx context.Context, w http.ResponseWriter, id,
 	// is a correctable 422, not a permanently ambiguous idempotency key.
 	plan, e := inspectSource(source)
 	if e != nil {
-		apiError(w, 422, id, "publisher refused artifact: prepare clean static output without hidden files, secrets, source code, links or supplied sidecars")
+		// Only the publisher's own refusals are echoed: they name a path relative
+		// to the upload. Other failures could carry server paths.
+		var refusal *sourceRefusal
+		if errors.As(e, &refusal) {
+			apiErrorDetail(w, 422, id, "publisher refused artifact", refusal.entry, refusal.reason)
+		} else {
+			apiError(w, 422, id, "publisher refused artifact")
+		}
 		return
 	}
 	single, hasIndex := plan.single, plan.hasIndex
@@ -905,7 +906,15 @@ func (a *apiServer) bodyError(w http.ResponseWriter, id string, e error) {
 	case errors.Is(e, context.Canceled) || errors.Is(e, context.DeadlineExceeded):
 		apiError(w, 408, id, "request cancelled or timed out")
 	default:
-		apiError(w, 400, id, "malformed or unsafe upload archive")
+		var ae *archiveError
+		switch {
+		case errors.As(e, &ae) && ae.unsafe:
+			apiErrorDetail(w, 400, id, "unsafe archive entry", ae.entry, ae.reason)
+		case errors.As(e, &ae):
+			apiErrorDetail(w, 400, id, "malformed archive", ae.entry, ae.reason)
+		default:
+			apiErrorDetail(w, 400, id, "malformed archive", "", "the request body or archive could not be read")
+		}
 	}
 }
 func (a *apiServer) download(w http.ResponseWriter, r *http.Request, id string, m manifest) {

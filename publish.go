@@ -201,9 +201,17 @@ func validateName(name string, isDir bool) error {
 		}
 	}
 	if reason != "" {
-		return fmt.Errorf("refusing %q: %s; prepare a clean static output directory", name, reason)
+		return &sourceRefusal{entry: name, reason: reason}
 	}
 	return nil
+}
+
+// sourceRefusal is a publisher policy refusal of one path relative to the
+// source, safe to report back to the uploader with the reason.
+type sourceRefusal struct{ entry, reason string }
+
+func (e *sourceRefusal) Error() string {
+	return fmt.Sprintf("refusing %q: %s; prepare a clean static output directory", e.entry, e.reason)
 }
 
 type sourceFile struct {
@@ -262,7 +270,7 @@ func inspectSourceContext(ctx context.Context, source string) (_ *sourcePlan, er
 		if ext == ".gz" || ext == ".br" {
 			original := p.name[:len(p.name)-len(ext)]
 			if _, e := p.root.Lstat(original); e == nil {
-				return nil, fmt.Errorf("precompressed sidecar %q has an original sibling; publish the original and let publish compress", p.name)
+				return nil, &sourceRefusal{entry: p.name, reason: "precompressed sidecar next to its original; publish only the original, the server compresses it"}
 			} else if !errors.Is(e, fs.ErrNotExist) {
 				return nil, e
 			}
@@ -327,17 +335,21 @@ func inspectSourceContext(ctx context.Context, source string) (_ *sourcePlan, er
 				return e
 			}
 			if info.Mode()&os.ModeSymlink != 0 {
-				return fmt.Errorf("symlink %q is forbidden", rel)
+				return &sourceRefusal{entry: filepath.ToSlash(rel), reason: "symbolic links are not allowed"}
 			}
 			if !info.IsDir() && !info.Mode().IsRegular() {
-				return fmt.Errorf("special file %q (%s) is forbidden", rel, info.Mode())
+				return &sourceRefusal{entry: filepath.ToSlash(rel), reason: "special files (devices, sockets, FIFOs) are not allowed"}
 			}
 			if e = validateName(entry.Name(), info.IsDir()); e != nil {
-				return fmt.Errorf("%s: %w", rel, e)
+				var refusal *sourceRefusal
+				if errors.As(e, &refusal) {
+					refusal.entry = filepath.ToSlash(rel)
+				}
+				return e
 			}
 			ext := strings.ToLower(filepath.Ext(entry.Name()))
 			if !info.IsDir() && (ext == ".gz" || ext == ".br") && names[entry.Name()[:len(entry.Name())-len(ext)]] {
-				return fmt.Errorf("precompressed sidecar %q collides with its original sibling; remove it and let publish compress", rel)
+				return &sourceRefusal{entry: filepath.ToSlash(rel), reason: "precompressed sidecar next to its original; publish only the original, the server compresses it"}
 			}
 			if info.IsDir() {
 				p.dirs = append(p.dirs, rel)

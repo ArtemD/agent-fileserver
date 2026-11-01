@@ -53,6 +53,7 @@ themselves. Details: docs/TESTING.md.
 | `mcp.go` | MCP tools; the only management surface |
 | `api.go` | Auth, rate limits, in-process release core, Caddy `forward_auth` endpoint |
 | `publish.go`, `archive*.go`, `security.go` | Publisher, archive extraction, keys, policies |
+| `errors.go` | Error responses: stable error strings plus a next-step `hint` for every one |
 | `tests/` | Live tests against a running stack |
 | `docs/` | MCP, architecture/security, install/operations, testing |
 

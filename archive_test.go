@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 type tarFixture struct {
@@ -86,10 +88,12 @@ func TestArchiveRootsAndImplicitParents(t *testing.T) {
 func TestArchiveUnsafeEntries(t *testing.T) {
 	cases := map[string][]tarFixture{
 		"traversal": {{"site/../evil", 0, "x", nil}}, "absolute": {{"/evil", 0, "", nil}}, "backslash": {{"site\\evil", 0, "", nil}}, "dot": {{"site/./x", 0, "", nil}}, "empty-component": {{"site//x", 0, "", nil}},
-		"two-roots": {{"a", 0, "", nil}, {"b", 0, "", nil}}, "duplicate": {{"a/x", 0, "", nil}, {"a/x", 0, "", nil}}, "duplicate-directory": {{"a/", tar.TypeDir, "", nil}, {"a/", tar.TypeDir, "", nil}},
+		"duplicate": {{"a/x", 0, "", nil}, {"a/x", 0, "", nil}}, "duplicate-directory": {{"a/", tar.TypeDir, "", nil}, {"a/", tar.TypeDir, "", nil}},
 		"file-parent": {{"a", 0, "", nil}, {"a/x", 0, "", nil}}, "implicit-parent-file": {{"a/x", 0, "", nil}, {"a", 0, "", nil}}, "dir-to-file": {{"a/x/", tar.TypeDir, "", nil}, {"a/x", 0, "", nil}},
 		"symlink": {{"a", tar.TypeSymlink, "", nil}}, "hardlink": {{"a", tar.TypeLink, "", nil}}, "fifo": {{"a", tar.TypeFifo, "", nil}}, "char": {{"a", tar.TypeChar, "", nil}}, "block": {{"a", tar.TypeBlock, "", nil}},
 		"depth": {{strings.Repeat("a/", 32) + "x", 0, "", nil}}, "path-bytes": {{"root/" + strings.Repeat("x", 1024), 0, "", nil}},
+		"dot-traversal": {{"./../evil", 0, "", nil}}, "double-dot-prefix": {{"././x", 0, "", nil}}, "dot-duplicate": {{"./a", 0, "", nil}, {"a", 0, "", nil}},
+		"flat-symlink": {{"index.html", 0, "x", nil}, {"link", tar.TypeSymlink, "", nil}},
 	}
 	for name, files := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -224,5 +228,118 @@ func TestArchiveImplicitObjectsAreBounded(t *testing.T) {
 	cfg.MaxEntries = 3
 	if _, e := extractArtifact(context.Background(), bytes.NewReader(fixtureTar(t, tarFixture{"root/a", 0, "", nil}, tarFixture{"root/", tar.TypeDir, "", nil}, tarFixture{"root/b", 0, "", nil})), t.TempDir(), cfg); e != nil {
 		t.Fatal(e)
+	}
+}
+
+// Issue #11: flat archives from GNU tar, ustar and pax writers, gzipped or not,
+// and "tar -C dir ." output with its "./" prefixes, publish as ZIP does.
+func TestArchiveFlatTarDialects(t *testing.T) {
+	files := map[string]string{"index.html": "<!doctype html><title>t</title><p>hello</p>\n", "robots.txt": "User-agent: *\nDisallow: /\n"}
+	build := func(format tar.Format, prefix string, rootEntry bool) []byte {
+		var b bytes.Buffer
+		w := tar.NewWriter(&b)
+		if rootEntry {
+			if e := w.WriteHeader(&tar.Header{Name: "./", Typeflag: tar.TypeDir, Mode: 0755, Format: format}); e != nil {
+				t.Fatal(e)
+			}
+		}
+		for _, name := range []string{"index.html", "robots.txt"} {
+			h := &tar.Header{Name: prefix + name, Typeflag: tar.TypeReg, Mode: 0644, Size: int64(len(files[name])), Uname: "root", Gname: "root", Format: format}
+			if format == tar.FormatPAX {
+				h.PAXRecords = map[string]string{"mtime": "1793566295.5"}
+			}
+			if e := w.WriteHeader(h); e != nil {
+				t.Fatal(e)
+			}
+			if _, e := io.WriteString(w, files[name]); e != nil {
+				t.Fatal(e)
+			}
+		}
+		if e := w.Close(); e != nil {
+			t.Fatal(e)
+		}
+		// GNU tar and Python pad to a 10240-byte record.
+		out := b.Bytes()
+		return append(out, make([]byte, (10240-len(out)%10240)%10240)...)
+	}
+	cases := map[string][]byte{}
+	for fname, format := range map[string]tar.Format{"gnu": tar.FormatGNU, "ustar": tar.FormatUSTAR, "pax": tar.FormatPAX} {
+		cases[fname] = build(format, "", false)
+		cases[fname+"-dot"] = build(format, "./", true)
+		cases[fname+"-gz"] = fixtureGzip(t, build(format, "", false))
+	}
+	// Archive C from the issue, byte for byte (GNU tar 1.35, tar -czf).
+	reported, e := base64.StdEncoding.DecodeString("H4sIAAAAAAAAA+3TsYrCQBDG8a19irUVNLtrYkCWVPcKPkDURQPRDcmI3tubOwvBQpvLifD/NTMwU0wxX3XchstsL4daDcb0Fmn6W3uP1ZgsVTZzuc3d3LpcGWuzLFfaDHfS3amTstVatTHKs71X8w/lx9u4ke8m6J8fKLxUUodCfHJrfFPsQ11HnzTF6N234u+1cR2lm8llwOd+mf+5e8z/wpH/f7HqQjstd+EoSz0ZfVVd2af9vNQJaQcAAAAAAAAAAAAAAPgIV3myT/QAKAAA")
+	if e != nil {
+		t.Fatal(e)
+	}
+	cases["issue-11"] = reported
+	for name, b := range cases {
+		t.Run(name, func(t *testing.T) {
+			dst := t.TempDir()
+			root, e := extractArtifact(context.Background(), bytes.NewReader(b), dst, archiveTestConfig())
+			if e != nil {
+				t.Fatal(e)
+			}
+			if root != dst {
+				t.Fatalf("flat archive root %q, want %q", root, dst)
+			}
+			entries, e := os.ReadDir(dst)
+			if e != nil || len(entries) != 2 {
+				t.Fatalf("entries %v %v", entries, e)
+			}
+			got, e := os.ReadFile(filepath.Join(dst, "robots.txt"))
+			if e != nil || string(got) != files["robots.txt"] {
+				t.Fatalf("robots.txt %q %v", got, e)
+			}
+		})
+	}
+	// A single wrapper is still unwrapped once.
+	dst := t.TempDir()
+	root, e := extractArtifact(context.Background(), bytes.NewReader(fixtureTar(t, tarFixture{"./site/", tar.TypeDir, "", nil}, tarFixture{"./site/index.html", 0, "x", nil})), dst, archiveTestConfig())
+	if e != nil || root != filepath.Join(dst, "site") {
+		t.Fatalf("wrapper root %q %v", root, e)
+	}
+}
+
+// Refusals say which entry failed and why, and separate unsafe entries from
+// malformed archives, for tar and ZIP alike.
+func TestArchiveErrorsNameEntry(t *testing.T) {
+	cases := []struct {
+		name          string
+		archive       []byte
+		unsafe        bool
+		entry, reason string
+	}{
+		{"traversal", fixtureTar(t, tarFixture{"index.html", 0, "x", nil}, tarFixture{"../evil.html", 0, "x", nil}), true, "../evil.html", "traversal"},
+		{"symlink", fixtureTar(t, tarFixture{"index.html", 0, "x", nil}, tarFixture{"link", tar.TypeSymlink, "", nil}), true, "link", "symbolic links"},
+		{"hardlink", fixtureTar(t, tarFixture{"link", tar.TypeLink, "", nil}), true, "link", "hard links"},
+		{"fifo", fixtureTar(t, tarFixture{"pipe", tar.TypeFifo, "", nil}), true, "pipe", "FIFO"},
+		{"absolute", fixtureTar(t, tarFixture{"/etc/passwd", 0, "", nil}), true, "/etc/passwd", "absolute"},
+		{"duplicate", fixtureTar(t, tarFixture{"a", 0, "", nil}, tarFixture{"a", 0, "", nil}), true, "a", "duplicate"},
+		{"long-name", fixtureTar(t, tarFixture{"../" + strings.Repeat("é", 400), 0, "", nil}), true, "", "traversal"},
+		{"not-archive", []byte("<!doctype html>"), false, "", "not a ZIP, tar or tar.gz"},
+		{"trailing", append(fixtureTar(t, tarFixture{"a", 0, "x", nil}), []byte("junk")...), false, "", "after the tar"},
+		{"no-terminal", fixtureTar(t, tarFixture{"a", 0, "x", nil})[:1024], false, "", "end-of-archive"},
+		{"bad-gzip", []byte{0x1f, 0x8b, 0, 0}, false, "", "gzip"},
+		{"zip-traversal", fixtureZIP(t, zipFile("../evil.html", "x")), true, "../evil.html", "traversal"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, e := extractArtifact(context.Background(), bytes.NewReader(c.archive), t.TempDir(), archiveTestConfig())
+			var ae *archiveError
+			if !errors.As(e, &ae) || !errors.Is(e, errUnsafeArchive) {
+				t.Fatalf("untyped refusal %v", e)
+			}
+			if ae.unsafe != c.unsafe || !strings.Contains(ae.reason, c.reason) {
+				t.Fatalf("got unsafe=%v reason %q", ae.unsafe, ae.reason)
+			}
+			if c.entry != "" && ae.entry != c.entry {
+				t.Fatalf("entry %q, want %q", ae.entry, c.entry)
+			}
+			if len(ae.entry) > maxReportedEntry+3 || !utf8.ValidString(ae.entry) {
+				t.Fatalf("unbounded or invalid entry %q", ae.entry)
+			}
+		})
 	}
 }

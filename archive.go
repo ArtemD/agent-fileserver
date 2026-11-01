@@ -19,6 +19,49 @@ import (
 var errArchiveLimit = errors.New("archive limit exceeded")
 var errUnsafeArchive = errors.New("invalid or unsafe archive")
 
+// archiveError says why an archive was refused, so an agent can fix its
+// packaging instead of bisecting. It always matches errUnsafeArchive. entry is
+// the member name exactly as the uploader's own archive spelled it (bounded,
+// never file content); it is empty when the archive as a whole is malformed.
+type archiveError struct {
+	entry, reason string
+	unsafe        bool
+}
+
+func (e *archiveError) Error() string {
+	if e.unsafe {
+		return fmt.Sprintf("unsafe archive entry %q: %s", e.entry, e.reason)
+	}
+	if e.entry != "" {
+		return fmt.Sprintf("malformed archive entry %q: %s", e.entry, e.reason)
+	}
+	return "malformed archive: " + e.reason
+}
+func (e *archiveError) Unwrap() error { return errUnsafeArchive }
+
+// maxReportedEntry bounds an echoed member name; names may be up to 1 KiB or
+// more in a hostile archive and the reason must stay readable.
+const maxReportedEntry = 256
+
+func unsafeEntry(name, reason string) error {
+	if len(name) > maxReportedEntry {
+		name = name[:maxReportedEntry]
+		for len(name) > 0 && !utf8.ValidString(name) {
+			name = name[:len(name)-1]
+		}
+		name += "..."
+	}
+	return &archiveError{entry: name, reason: reason, unsafe: true}
+}
+func malformedArchive(reason string) error { return &archiveError{reason: reason} }
+
+// malformedEntry is structural damage that can be pinned to one member.
+func malformedEntry(name, reason string) error {
+	e := unsafeEntry(name, reason).(*archiveError)
+	e.unsafe = false
+	return e
+}
+
 type archiveBudgetReader struct {
 	r          io.Reader
 	left, read int64
@@ -44,7 +87,7 @@ func (r *archiveBudgetReader) Read(p []byte) (int, error) {
 	return n, e
 }
 
-// extractArtifact accepts single-root tar/tar.gz and flat or single-wrapper ZIP.
+// extractArtifact accepts flat or single-wrapper tar, tar.gz and ZIP.
 // dst must be a newly created private directory. The returned operand still
 // requires the shared publisher's validation; extraction is not activation.
 func extractArtifact(ctx context.Context, input io.Reader, dst string, cfg apiConfig) (string, error) {
@@ -106,7 +149,9 @@ func extractArtifact(ctx context.Context, input io.Reader, dst string, cfg apiCo
 	return extractTar(ctx, wire, dst, cfg)
 }
 
-// Tar keeps its original exactly-one-root and directory-only semantics.
+// Tar follows the ZIP layout rules: a flat site, or one wrapper directory that
+// is unwrapped once. One leading "./" (as written by "tar -C dir -czf x .") is
+// dropped; the bare "./" entry names the archive root itself.
 func extractTar(ctx context.Context, wire *bufio.Reader, dst string, cfg apiConfig) (string, error) {
 	var stream io.Reader = wire
 	var gz *gzip.Reader
@@ -115,7 +160,7 @@ func extractTar(ctx context.Context, wire *bufio.Reader, dst string, cfg apiConf
 		var err error
 		gz, err = gzip.NewReader(wire)
 		if err != nil {
-			return "", errUnsafeArchive
+			return "", malformedArchive("invalid gzip header")
 		}
 		defer gz.Close()
 		gz.Multistream(false)
@@ -126,7 +171,8 @@ func extractTar(ctx context.Context, wire *bufio.Reader, dst string, cfg apiConf
 	bounded := &archiveBudgetReader{r: stream, left: cfg.MaxExtractBytes + int64(cfg.MaxEntries)*2048 + 1048576, ctx: ctx}
 	tr := tar.NewReader(bounded)
 	seen := map[string]byte{}
-	root := ""
+	roots := map[string]bool{}
+	files := 0
 	count := 0
 	objects := 0
 	var total int64
@@ -136,7 +182,7 @@ func extractTar(ctx context.Context, wire *bufio.Reader, dst string, cfg apiConf
 		if err == io.EOF {
 			// archive/tar tolerates a missing end marker; our wire contract does not.
 			if bounded.read-before < 1024 {
-				return "", errUnsafeArchive
+				return "", malformedArchive("tar end-of-archive marker missing or truncated")
 			}
 			break
 		}
@@ -144,52 +190,60 @@ func extractTar(ctx context.Context, wire *bufio.Reader, dst string, cfg apiConf
 			if errors.Is(err, errArchiveLimit) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return "", err
 			}
-			return "", errUnsafeArchive
+			if count == 0 {
+				return "", malformedArchive("not a ZIP, tar or tar.gz archive")
+			}
+			return "", malformedArchive("corrupt or truncated tar header")
 		}
 		count++
 		if count > cfg.MaxEntries {
 			return "", errArchiveLimit
 		}
+		raw := h.Name
 		if h.Typeflag != tar.TypeDir && h.Typeflag != tar.TypeReg && h.Typeflag != tar.TypeRegA {
-			return "", errUnsafeArchive
+			return "", unsafeEntry(raw, tarTypeReason(h.Typeflag))
 		}
 		for key := range h.PAXRecords {
 			if strings.Contains(strings.ToLower(key), "sparse") || key == "SCHILY.realsize" {
-				return "", errUnsafeArchive
+				return "", unsafeEntry(raw, "sparse files are not supported")
 			}
 		}
-		name := h.Name
+		name := raw
 		if h.Typeflag == tar.TypeDir {
 			name = strings.TrimSuffix(name, "/")
+			if name == "." {
+				if h.Size != 0 {
+					return "", unsafeEntry(raw, "directory entry has data")
+				}
+				continue // "./": the archive root, which always exists.
+			}
 		}
+		name = strings.TrimPrefix(name, "./")
 		if !utf8.ValidString(name) || len(name) == 0 || len(name) > 1024 || strings.ContainsAny(name, "\\\x00\r\n") || strings.HasPrefix(name, "/") {
-			return "", errUnsafeArchive
+			return "", unsafeEntry(raw, "invalid path: absolute, empty, too long, not UTF-8, or contains a backslash or control character")
 		}
 		parts := strings.Split(name, "/")
 		if len(parts) > 32 {
 			return "", errArchiveLimit
 		}
 		for _, p := range parts {
-			if p == "" || p == "." || p == ".." {
-				return "", errUnsafeArchive
+			if p == ".." {
+				return "", unsafeEntry(raw, "path traversal (..)")
+			}
+			if p == "" || p == "." {
+				return "", unsafeEntry(raw, "path is not canonical (empty or . component)")
 			}
 		}
 		if path.Clean(name) != name {
-			return "", errUnsafeArchive
-		}
-		if root == "" {
-			root = parts[0]
-		}
-		if root != parts[0] {
-			return "", errUnsafeArchive
+			return "", unsafeEntry(raw, "path is not canonical")
 		}
 		if typ, ok := seen[name]; ok && !(typ == 'i' && h.Typeflag == tar.TypeDir) {
-			return "", errUnsafeArchive
+			return "", unsafeEntry(raw, "duplicate or conflicting entry")
 		}
 		for i := 1; i < len(parts); i++ {
 			parent := strings.Join(parts[:i], "/")
 			if typ := seen[parent]; typ == 'f' {
-				return "", errUnsafeArchive
+				return "", unsafeEntry(raw, "parent path is a file")
 			}
 			if seen[parent] == 0 {
 				objects++
@@ -209,9 +263,10 @@ func extractTar(ctx context.Context, wire *bufio.Reader, dst string, cfg apiConf
 			}
 		}
 		target := filepath.Join(dst, filepath.FromSlash(name))
+		roots[parts[0]] = true
 		if h.Typeflag == tar.TypeDir {
 			if h.Size != 0 {
-				return "", errUnsafeArchive
+				return "", unsafeEntry(raw, "directory entry has data")
 			}
 			seen[name] = 'd'
 			if err = os.MkdirAll(target, 0700); err != nil {
@@ -221,9 +276,10 @@ func extractTar(ctx context.Context, wire *bufio.Reader, dst string, cfg apiConf
 		}
 		// A file cannot replace an implicit parent directory.
 		if seen[name] == 'i' {
-			return "", errUnsafeArchive
+			return "", unsafeEntry(raw, "file replaces a directory")
 		}
 		seen[name] = 'f'
+		files++
 		total += h.Size
 		if err = os.MkdirAll(filepath.Dir(target), 0700); err != nil {
 			return "", err
@@ -235,14 +291,17 @@ func extractTar(ctx context.Context, wire *bufio.Reader, dst string, cfg apiConf
 		_, copyErr := io.CopyN(f, tr, h.Size)
 		closeErr := f.Close()
 		if copyErr != nil {
-			return "", errors.Join(errUnsafeArchive, copyErr)
+			if errors.Is(copyErr, errArchiveLimit) || errors.Is(copyErr, context.Canceled) || errors.Is(copyErr, context.DeadlineExceeded) {
+				return "", copyErr
+			}
+			return "", errors.Join(malformedArchive("truncated or corrupt file data"), copyErr)
 		}
 		if closeErr != nil {
 			return "", closeErr
 		}
 	}
-	if root == "" {
-		return "", errUnsafeArchive
+	if len(roots) == 0 {
+		return "", malformedArchive("archive has no entries")
 	}
 	// Only zero tar padding may follow the terminal blocks. Reading to the real
 	// EOF verifies gzip CRC/length and bounds expansion even after tar EOF.
@@ -251,7 +310,7 @@ func extractTar(ctx context.Context, wire *bufio.Reader, dst string, cfg apiConf
 		n, err := bounded.Read(buf)
 		for _, b := range buf[:n] {
 			if b != 0 {
-				return "", errUnsafeArchive
+				return "", malformedArchive("unexpected data after the tar end-of-archive marker")
 			}
 		}
 		if err == io.EOF {
@@ -262,17 +321,36 @@ func extractTar(ctx context.Context, wire *bufio.Reader, dst string, cfg apiConf
 		}
 	}
 	if bounded.read%512 != 0 {
-		return "", errUnsafeArchive
+		return "", malformedArchive("tar stream is not a whole number of 512-byte blocks")
 	}
 	if gz != nil {
 		if _, err := wire.ReadByte(); err != io.EOF {
 			if errors.Is(err, errArchiveLimit) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return "", err
 			}
-			return "", errUnsafeArchive
+			return "", malformedArchive("unexpected data after the gzip stream")
 		}
 	}
-	return filepath.Join(dst, root), nil
+	// A single top-level name is unwrapped once, as for ZIP: a wrapper
+	// directory becomes the site, a lone file becomes a single-file release.
+	if len(roots) == 1 {
+		for name := range roots {
+			return filepath.Join(dst, name), nil
+		}
+	}
+	return dst, nil
+}
+
+func tarTypeReason(t byte) string {
+	switch t {
+	case tar.TypeSymlink:
+		return "symbolic links are not allowed"
+	case tar.TypeLink:
+		return "hard links are not allowed"
+	case tar.TypeChar, tar.TypeBlock, tar.TypeFifo:
+		return "device and FIFO entries are not allowed"
+	}
+	return "only regular files and directories are allowed"
 }
 
 // originalEntries excludes publisher-private markers and only those compression

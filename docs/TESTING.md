@@ -33,7 +33,9 @@ issue exists and fills a form's required fields. The `commit-msg` and `pre-push`
 hooks in `.githooks/` run it locally; `--self-test` covers its rules.
 
 Go tests cover safe publication, policies/credentials, replay/recovery,
-tar/ZIP traversal/type/CRC/limits, admission/privacy, stale-socket recovery and
+tar/ZIP layout (flat, one wrapper, `./` prefix) and traversal/type/CRC/limits,
+that archive errors name the entry and reason, that every error has a `hint`,
+admission/privacy, stale-socket recovery and
 MCP. MCP tests use the official SDK handler: initialization, discovery, shared
 CRUD/passwords/download, ZIP/tar, revocation, both key headers, that the release
 core is unreachable as a public route, origin/body/concurrency gates,
@@ -75,7 +77,9 @@ key. Shared helper: `tests/mcp_fixture.py`.
   revocation, and that no non-MCP management route is reachable. It also tests
   upload tickets: an archive and a single-file upload through Caddy with the
   returned `curl` command, ticket reuse, refusal of management keys on
-  `/_upload` and of tickets on `/mcp`. With
+  `/_upload` and of tickets on `/mcp`. Flat tar.gz archives publish through
+  `publish_archive` and `begin_upload`, and an unsafe tar is refused with
+  `entry`, `reason` and `hint`. With
   `FSERVER_TEST_LARGE=1` it also streams a 100 MiB archive as base64 JSON and
   checks that its download is refused (inline limit 1 MiB), and uploads a
   256 MiB single file through `begin_upload` and checks the round trip.
