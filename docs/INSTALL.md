@@ -25,6 +25,7 @@ cp .env.example .env    # then edit
 | `FSERVER_LISTEN` | Proxy mode host address, default `127.0.0.1:8000` |
 | `FSERVER_DATA_DIR` | Host directory for releases, policies and key hashes (`./data`) |
 | `FSERVER_LOG_DIR` | Host directory for the access log (`./logs`) |
+| `FSERVER_VERSION` | Build-time only, not needed in `.env`. Version stamped into the image, shown by `server_info` and MCP; defaults to `dev` |
 | `FSERVER_NAMESPACE` | Optional label shown by `server_info` |
 | `FSERVER_EDGE_SUBNET`, `FSERVER_TRUSTED_PROXIES` | Only if `172.30.53.0/24` clashes on this host; keep in sync |
 | `FSERVER_MAX_UPLOAD_BYTES` | Optional. Largest `begin_upload` upload, default `1073741824` (1 GiB). Also Caddy's body cap on `/_upload` |
@@ -52,7 +53,7 @@ body size or time, and then the upload fails before it reaches Caddy.
 **Proxy mode** (default):
 
 ```sh
-docker compose up -d --build --wait
+FSERVER_VERSION=$(git describe --tags --always --dirty) docker compose up -d --build --wait
 ```
 
 Caddy listens on `FSERVER_LISTEN` with plain HTTP. Every connection to that port
@@ -63,7 +64,7 @@ frontend runs on the same host, or firewall it to the frontend's address.
 **Direct mode** (Caddy obtains and renews certificates itself):
 
 ```sh
-docker compose -f compose.yaml -f compose.direct.yaml up -d --build --wait
+FSERVER_VERSION=$(git describe --tags --always --dirty) docker compose -f compose.yaml -f compose.direct.yaml up -d --build --wait
 ```
 
 ## exe.dev
@@ -129,8 +130,11 @@ sudo tail -F logs/access.json             # every request, keys redacted
 ```sh
 git fetch --tags                          # review the release notes first
 git checkout vX.Y.Z                       # a tested release, or `git pull` for main
-docker compose up -d --build --wait
+FSERVER_VERSION=$(git describe --tags --always --dirty) docker compose up -d --build --wait
 ```
+
+`FSERVER_VERSION` is a build-time variable that stamps the version shown by
+`server_info` and MCP; without it the build reports `dev`.
 
 Releases are published only after the full test suite passes on the tag; each
 lists its commits and the issues they closed.

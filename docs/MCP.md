@@ -221,7 +221,7 @@ named entry and retry with the same `idempotency_key`.
 
 | Tool | Arguments |
 |---|---|
-| `server_info` | `{}`; includes an `upload` object: `max_bytes`, `max_extract_bytes`, `max_entries`, `ticket_seconds`, `max_pending_tickets` |
+| `server_info` | `{}`; includes `version` (the build version, such as a release tag, or `dev` for an unstamped build) and an `upload` object: `max_bytes`, `max_extract_bytes`, `max_entries`, `ticket_seconds`, `max_pending_tickets` |
 | `list_releases` | `{}` |
 | `release_info` | `{"token":"RELEASE_TOKEN"}` |
 | `download_release` | `{"token":"RELEASE_TOKEN"}` |

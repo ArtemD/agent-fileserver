@@ -108,6 +108,12 @@ func TestMCPInitializeDiscoveryAndAnnotations(t *testing.T) {
 	if !bytes.Contains(raw, []byte(`"namespace":"default"`)) || bytes.Contains(raw, []byte(f.key)) {
 		t.Fatalf("server_info: %s", raw)
 	}
+	var info struct {
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal(raw, &info); err != nil || info.Version == "" || info.Version != buildVersion {
+		t.Fatalf("server_info version %q, want %q (err %v): %s", info.Version, buildVersion, err, raw)
+	}
 }
 
 type mcpTestTransport func(*http.Request) (*http.Response, error)

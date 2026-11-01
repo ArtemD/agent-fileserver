@@ -426,7 +426,7 @@ func (a *apiServer) ServeHTTP(out http.ResponseWriter, r *http.Request) {
 		}
 		// "limits" applies to publish_archive/publish_files; "upload" to begin_upload.
 		mcpLimits := a.mcpLimits()
-		apiJSON(w, 200, map[string]any{"namespace": a.cfg.Namespace, "agent": identity.Label,
+		apiJSON(w, 200, map[string]any{"version": buildVersion, "namespace": a.cfg.Namespace, "agent": identity.Label,
 			"limits": map[string]any{"max_upload_bytes": mcpLimits.MaxUploadBytes, "max_extract_bytes": mcpLimits.MaxExtractBytes, "max_entries": mcpLimits.MaxEntries, "min_free_bytes": a.cfg.MinFreeBytes, "min_free_inodes": minFreeInodes, "publish_limit": a.cfg.PublishLimit, "publish_window_seconds": 3600, "request_timeout_seconds": 170},
 			"upload": map[string]any{"max_bytes": a.cfg.MaxUploadBytes, "max_extract_bytes": a.cfg.MaxExtractBytes, "max_entries": a.cfg.MaxEntries, "ticket_seconds": int(uploadTicketTTL / time.Second), "max_pending_tickets": uploadMaxPending}})
 		return

@@ -36,7 +36,9 @@ You need Docker with Compose v2, plus either a domain pointing at the host
 ```sh
 git clone https://github.com/ArtemD/agent-fileserver.git
 cd agent-fileserver
+git checkout "$(git describe --tags --abbrev=0)"   # latest release; skip to run main
 cp .env.example .env          # set FSERVER_DOMAIN (and FSERVER_MODE)
+export FSERVER_VERSION=$(git describe --tags --always --dirty)   # version shown by server_info
 docker compose up -d --build --wait                                   # proxy mode
 docker compose -f compose.yaml -f compose.direct.yaml up -d --build --wait   # or direct HTTPS
 ```
@@ -198,14 +200,27 @@ More: [MCP reference](docs/MCP.md).
 docker compose ps                          # health of api and caddy
 docker compose logs -f api                 # MCP operations audit (never secrets)
 sudo tail -F logs/access.json              # every request, keys redacted
-git pull && docker compose up -d --build --wait   # upgrade, after reviewing the new revision
+git fetch --tags && git checkout vX.Y.Z   # upgrade: read CHANGELOG.md first
+FSERVER_VERSION=$(git describe --tags --always --dirty) docker compose up -d --build --wait
 ```
 
 Upgrades keep keys, passwords and releases (they live in `./data`).
 
+## Releases
+
+Versions follow [Semantic Versioning](https://semver.org/).
+[CHANGELOG.md](CHANGELOG.md) lists what changed in each version and anything an
+operator or agent must do when upgrading. A version is published on
+[GitHub Releases](https://github.com/ArtemD/agent-fileserver/releases) only after
+the full test suite passes on its tag. `server_info` reports the running version.
+
 ## Contributing
 
-Read [AGENTS.md](AGENTS.md) (works for humans and coding agents). Every change
+This project is developed and maintained with AI coding agents (Claude) working
+for the owner: an agent opens each issue, writes the code, tests and docs, lands
+the change on `main` and cuts releases, under the rules in
+[AGENTS.md](AGENTS.md). The same rules and CI apply to any contributor, human or
+agent. Read [AGENTS.md](AGENTS.md) (works for humans and coding agents). Every change
 starts with an issue (bug or change form) and its commit says `Fixes #N`, so the
 history keeps the problem, decision and evidence behind each change. Every change
 updates code, tests, docs and CI together. Hooks (`git config core.hooksPath

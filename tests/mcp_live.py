@@ -337,6 +337,8 @@ class MCPLive(unittest.TestCase):
         me = self.tool("server_info", {})
         check(me.get("agent") == self.tag and me.get("namespace"),
               "authenticated MCP identity mismatch")
+        check(isinstance(me.get("version"), str) and me["version"],
+              "server_info version missing")
         upload = me.get("upload")
         check(isinstance(upload, dict)
               and all(type(upload.get(field)) is int for field in (

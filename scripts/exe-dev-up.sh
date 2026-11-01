@@ -24,6 +24,9 @@ if [ ! -f .env ]; then
     echo "Created .env for https://$name.exe.xyz"
 fi
 
+# Stamp the build with the release tag or commit shown by server_info.
+FSERVER_VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo dev)
+export FSERVER_VERSION
 docker compose up -d --build --wait
 docker compose ps
 

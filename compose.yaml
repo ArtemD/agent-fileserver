@@ -47,7 +47,10 @@ services:
   # MCP service: no network at all; reachable only through the private socket.
   api:
     <<: *hardened
-    build: .
+    build:
+      context: .
+      args:
+        VERSION: ${FSERVER_VERSION:-dev}
     image: agent-fileserver:local
     network_mode: none
     environment:
@@ -103,7 +106,10 @@ services:
   admin:
     <<: *hardened
     profiles: [admin]
-    build: .
+    build:
+      context: .
+      args:
+        VERSION: ${FSERVER_VERSION:-dev}
     image: agent-fileserver:local
     network_mode: none
     restart: "no"

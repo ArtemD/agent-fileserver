@@ -24,22 +24,36 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      - name: Publish a GitHub release listing every commit and the issues it closed
+      - name: Publish a GitHub release from the changelog, listing every commit and the issues it closed
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
+          version=${TAG#v}
+          # The tagged CHANGELOG.md must describe this exact version; refuse to
+          # publish an undocumented release.
+          awk -v heading="## [$version]" '
+            index($0, heading) == 1 { found = 1; next }
+            found && (/^## \[/ || /^\[[^]]+\]: /) { exit }
+            found { print }
+          ' CHANGELOG.md > "$RUNNER_TEMP/changelog.md"
+          if ! grep -q '[^[:space:]]' "$RUNNER_TEMP/changelog.md"; then
+            echo "::error file=CHANGELOG.md::no '## [$version]' section for tag $TAG"
+            exit 1
+          fi
           previous=$(git describe --tags --abbrev=0 "$TAG^" 2>/dev/null || true)
           range="${previous:+$previous..}$TAG"
           {
-            echo "## Changes"
+            cat "$RUNNER_TEMP/changelog.md"
+            echo
+            echo "## Commits"
             git log --no-merges --reverse --format='- %s (%h)' "$range"
             echo
             echo "## Issues closed"
             git log --format=%B "$range" | grep -oE '^(Fixes|Closes|Resolves) #[0-9]+' \
               | sed 's/.* /- /' | sort -u || true
             echo
-            echo "Upgrade: \`git fetch --tags && git checkout $TAG && docker compose up -d --build --wait\`"
+            echo "Upgrade: \`git fetch --tags && git checkout $TAG && FSERVER_VERSION=$TAG docker compose up -d --build --wait\`"
             echo "(see docs/INSTALL.md, Upgrades)."
           } > "$RUNNER_TEMP/notes.md"
           gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag \

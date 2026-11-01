@@ -195,6 +195,26 @@ for path in [p for p in tracked() if p.endswith(".md")]:
         if not (ROOT / path).parent.joinpath(target).resolve().exists():
             fail(f"{path} links to a missing file: {target}")
 
+# 6b. CHANGELOG.md (Keep a Changelog + SemVer) drives release notes; release.yml
+# refuses a tag without its section, so keep the shape machine-checkable.
+changelog = read("CHANGELOG.md") if (ROOT / "CHANGELOG.md").is_file() else ""
+headings = re.findall(r"^## \[([^\]]+)\](.*)$", changelog, re.M)
+if not headings or headings[0] != ("Unreleased", ""):
+    fail("CHANGELOG.md must start its versions with a bare '## [Unreleased]' heading")
+versions = []
+for name, rest in headings[1:]:
+    if not re.fullmatch(r"\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?", name) or not re.fullmatch(r" - \d{4}-\d{2}-\d{2}", rest):
+        fail(f"CHANGELOG.md heading must be '## [X.Y.Z] - YYYY-MM-DD': {name}{rest}")
+        continue
+    versions.append(tuple(int(n) for n in name.split("-")[0].split(".")))
+if versions != sorted(versions, reverse=True) or len(set(versions)) != len(versions):
+    fail("CHANGELOG.md versions must be unique and newest first")
+for name, _ in headings:
+    if not re.search(r"^\[" + re.escape(name) + r"\]: https://", changelog, re.M):
+        fail(f"CHANGELOG.md has no comparison link for [{name}]")
+if "CHANGELOG.md" not in readme or "CHANGELOG.md" not in agents:
+    fail("README.md and AGENTS.md must point to CHANGELOG.md")
+
 # 7. Public-repo hygiene: no secrets, credentials, binaries or large files.
 forbidden_names = re.compile(
     r"(^|/)(\.env(\.(?!example$)[^/]*)?|\.envrc|credentials\.json|tokens\.json|client\.json|id_(rsa|ecdsa|ed25519)\S*)$"

@@ -40,6 +40,7 @@ themselves. Details: docs/TESTING.md.
 
 | Path | What |
 |---|---|
+| `CHANGELOG.md` | Keep a Changelog record per version; release notes are taken from it |
 | `compose.yaml`, `compose.direct.yaml`, `.env.example` | The deployment: services, hardening, volumes, config |
 | `Dockerfile` | Go service image (UID 10001); Caddy uses the official image |
 | `deploy/caddy/` | `Caddyfile.proxy`, `Caddyfile.direct`, shared `routes.caddy` |
@@ -74,7 +75,10 @@ A change is not finished until **all** of these are updated in the same commit:
    commit that changes code, deployment, scripts or CI without touching docs,
    unless it says why on its own line: `Docs: unchanged, <reason>` (a pure
    refactor, a test-only fix). Before committing, reread the docs the change
-   touches and fix anything that is now wrong, not only what is missing.
+   touches and fix anything that is now wrong, not only what is missing. A change
+   users, operators or agents can notice also gets a line under `## [Unreleased]`
+   in `CHANGELOG.md` (Added, Changed, Deprecated, Removed, Fixed, Security), with
+   its issue link; say what to do when a client or operator must act.
 3. **CI/CD.** `.github/workflows/test.yml` runs every automated check and every
    live test against the real compose stack; add new ones there. `security.yml`
    scans dependencies and code; `release.yml` publishes a `vX.Y.Z` tag only after
@@ -127,9 +131,12 @@ Verify with `python3 tests/mcp_live.py`.
 
 ## Git: every change has an issue
 
-Working alone, there are no pull requests: commits go to `main`, and the issue
-plus the commit are the record of why. Pull requests are optional, for a large or
-risky agent change the owner wants to review first.
+The project is maintained by a coding agent working for the owner: the owner
+states what the software should do, and the agent drives everything else, from
+issue to release, following this file. There are no pull requests for routine
+work: commits go to `main` once every check passes, and the issue plus the commit
+are the record of why. Open a pull request instead for a change under "Ask
+first", or a large or risky one the owner should review before it lands.
 
 1. **Open the issue first** with the bug or change form (web), or with
    `gh issue create --label bug|enhancement --title "…" --body-file FILE`, where
@@ -154,9 +161,24 @@ risky agent change the owner wants to review first.
    the issue and the commit tell the same story.
 4. **Push.** `pre-push` re-checks the commits and that each issue exists and fills
    its form; CI checks the pushed range again. Merge and Dependabot commits are exempt.
-5. **Release** when the owner asks: `git tag -a vX.Y.Z -m "…" && git push origin vX.Y.Z`.
+5. **Release** once user-visible changes are on `main` and CI is green there; do
+   not let them sit unreleased. Versions follow Semantic Versioning: while the
+   major version is 0, a minor release adds or changes behaviour (including any
+   change a client must adapt to) and a patch release only fixes bugs. Dependency,
+   CI and docs-only changes ride along with the next release.
+   1. In `CHANGELOG.md`, rename `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD`,
+      add a fresh empty `## [Unreleased]` above it, and update the comparison
+      links at the bottom. Commit it as `Release vX.Y.Z` with `Refs #N` for the
+      release issue, or as part of the last change of the release.
+   2. Tag that commit and push the tag:
+      `git tag -a vX.Y.Z -m "vX.Y.Z" && git push origin vX.Y.Z`.
+   3. `release.yml` reruns the full test suite on the tag, then publishes a
+      GitHub release whose notes are the changelog section plus every commit and
+      closed issue. It fails without a changelog section for the tag. Check that
+      the release appeared; never move or delete a published tag, release a new
+      patch instead.
 
 Also:
 - Run all checks first.
 - `git status` before committing: only intended source, doc and test files.
-- CI must be green on `main`.
+- CI must be green on `main`; when it is red, fixing it comes before new work.
