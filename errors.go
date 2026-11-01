@@ -51,6 +51,9 @@ const (
 	hintTimeout = "The request ran longer than request_timeout_seconds (server_info) or the client disconnected. " +
 		"Call list_releases to check; if nothing was published, retry with the same idempotency_key and bytes, " +
 		"or use begin_upload for large content."
+	hintPacking = "Text-heavy sites: tar.gz ('tar -czf site.tar.gz -C dist .') or ZIP ('cd dist && zip -r ../site.zip .'). " +
+		"Already-compressed files such as video, images, audio or PDF: plain tar ('tar -cf media.tar -C dir .') or a stored ZIP " +
+		"('zip -0 -r ../media.zip .'); compressing them again only costs time."
 	hintArchive = "Fix the named entry and publish again; the same idempotency_key is fine because nothing was published. " +
 		"Archives may be ZIP, tar or tar.gz, flat or in one wrapper directory, with only regular files and directories: " +
 		"no links, devices, absolute paths, '..' or duplicate names."
@@ -179,6 +182,8 @@ var errorHints = map[string]string{
 	// Archives.
 	"unsafe archive entry": hintArchive,
 	"malformed archive":    hintMalformed,
+	"unsupported archive format": "Repack the files as ZIP, tar or tar.gz and publish again; nothing was published, so the same " +
+		"idempotency_key is fine. " + hintPacking,
 
 	// Releases and downloads.
 	"could not list releases":       hintServer,

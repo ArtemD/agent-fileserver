@@ -159,7 +159,9 @@ calls `begin_upload` and runs the returned command. The base64 tools
 (`publish_files`, `publish_archive`) remain for small generated content.
 Details and limits: [MCP reference](docs/MCP.md#large-uploads).
 
-A ZIP, tar or tar.gz site can be flat or inside one folder. When a publish is
+A ZIP, tar or tar.gz site can be flat or inside one folder. Use tar.gz or ZIP
+for text sites and plain tar or `zip -0` for video, images and PDFs; xz, zstd,
+bzip2, 7z and rar are refused with a clear error. When a publish is
 refused, the error names the offending file and reason and includes a `hint`
 with the next step for the agent ([errors](docs/MCP.md#errors)).
 

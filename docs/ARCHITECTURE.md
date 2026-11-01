@@ -66,7 +66,11 @@ site or one wrapper directory (one leading `./` is accepted in tar). Extraction 
 ownership/permissions. Traversal, absolute paths, duplicates, conflicting types,
 special files, encrypted/unsupported ZIPs, corrupt data and resource-limit
 violations are rejected. Known harmless Mac packaging metadata is the only
-documented omission; secrets are rejected, not silently removed.
+documented omission; secrets are rejected, not silently removed. Only the
+standard library's tar, gzip and ZIP/deflate readers parse uploads. Other
+containers (xz, zstd, bzip2, 7z, rar, lzip, lz4) are named from their first
+bytes after tar parsing has already failed, and refused; no extra decoder or
+dependency is exposed to untrusted input.
 
 Refusals tell the caller what to fix without leaking server state. An `entry`
 echoed back is the caller's own archive member name, cut to 256 bytes and

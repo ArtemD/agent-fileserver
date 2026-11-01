@@ -908,6 +908,8 @@ func (a *apiServer) bodyError(w http.ResponseWriter, id string, e error) {
 	default:
 		var ae *archiveError
 		switch {
+		case errors.As(e, &ae) && ae.unsupported:
+			apiErrorDetail(w, 400, id, "unsupported archive format", "", ae.reason)
 		case errors.As(e, &ae) && ae.unsafe:
 			apiErrorDetail(w, 400, id, "unsafe archive entry", ae.entry, ae.reason)
 		case errors.As(e, &ae):

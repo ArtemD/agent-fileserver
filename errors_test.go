@@ -69,6 +69,10 @@ func TestArchiveRefusalResponses(t *testing.T) {
 	if got.Error != "unsafe archive entry" || got.Entry != "../evil.html" || !strings.Contains(got.Reason, "traversal") || got.RequestID == "" {
 		t.Fatalf("unsafe entry response %+v", got)
 	}
+	got = post([]byte("\xfd7zXZ\x00\x00\x04\xe6\xd6\xb4\x46"))
+	if got.Error != "unsupported archive format" || !strings.Contains(got.Reason, "detected xz") || !strings.Contains(got.Hint, "tar.gz") {
+		t.Fatalf("unsupported response %+v", got)
+	}
 	got = post([]byte("this is not an archive"))
 	if got.Error != "malformed archive" || got.Entry != "" || got.Reason == "" {
 		t.Fatalf("malformed response %+v", got)

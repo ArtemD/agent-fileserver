@@ -3,6 +3,7 @@ package main
 import (
 	"archive/tar"
 	"bufio"
+	"bytes"
 	"compress/gzip"
 	"context"
 	"errors"
@@ -24,8 +25,8 @@ var errUnsafeArchive = errors.New("invalid or unsafe archive")
 // the member name exactly as the uploader's own archive spelled it (bounded,
 // never file content); it is empty when the archive as a whole is malformed.
 type archiveError struct {
-	entry, reason string
-	unsafe        bool
+	entry, reason       string
+	unsafe, unsupported bool
 }
 
 func (e *archiveError) Error() string {
@@ -54,6 +55,23 @@ func unsafeEntry(name, reason string) error {
 	return &archiveError{entry: name, reason: reason, unsafe: true}
 }
 func malformedArchive(reason string) error { return &archiveError{reason: reason} }
+
+// unsupportedFormat names a recognised but unsupported container so the agent
+// can repack instead of guessing. It runs only after the first tar header has
+// already failed to parse, so it can sharpen an error but never refuse a valid
+// archive (a tar header starts with a file name, which may be "BZh..."). No
+// decoder runs, so these formats add no parsing surface.
+func unsupportedFormat(magic []byte) error {
+	for _, f := range []struct{ name, magic string }{
+		{"xz", "\xfd7zXZ\x00"}, {"zstd", "\x28\xb5\x2f\xfd"}, {"bzip2", "BZh"},
+		{"7z", "7z\xbc\xaf\x27\x1c"}, {"rar", "Rar!\x1a\x07"}, {"lzip", "LZIP"}, {"lz4", "\x04\x22\x4d\x18"},
+	} {
+		if strings.HasPrefix(string(magic), f.magic) {
+			return &archiveError{unsupported: true, reason: "detected " + f.name + "; only ZIP, tar and tar.gz are supported"}
+		}
+	}
+	return nil
+}
 
 // malformedEntry is structural damage that can be pinned to one member.
 func malformedEntry(name, reason string) error {
@@ -155,6 +173,8 @@ func extractArtifact(ctx context.Context, input io.Reader, dst string, cfg apiCo
 func extractTar(ctx context.Context, wire *bufio.Reader, dst string, cfg apiConfig) (string, error) {
 	var stream io.Reader = wire
 	var gz *gzip.Reader
+	prefix, _ := wire.Peek(8)
+	prefix = bytes.Clone(prefix)
 	magic, _ := wire.Peek(2)
 	if len(magic) == 2 && magic[0] == 0x1f && magic[1] == 0x8b {
 		var err error
@@ -191,6 +211,11 @@ func extractTar(ctx context.Context, wire *bufio.Reader, dst string, cfg apiConf
 				return "", err
 			}
 			if count == 0 {
+				if gz == nil {
+					if e := unsupportedFormat(prefix); e != nil {
+						return "", e
+					}
+				}
 				return "", malformedArchive("not a ZIP, tar or tar.gz archive")
 			}
 			return "", malformedArchive("corrupt or truncated tar header")

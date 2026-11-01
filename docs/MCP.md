@@ -60,7 +60,15 @@ For an entire exported website, send **one** `publish_archive` call:
 ZIP, tar, tar.gz are detected by bytes, not extension. All three accept the same
 layout: a flat site, or one wrapper directory that is unwrapped once (a lone
 file becomes a single-file release). One leading `./` is accepted, so
-`tar -C dist -czf site.tar.gz .` works. Keep relative asset paths. Serve
+`tar -C dist -czf site.tar.gz .` works. xz, zstd, bzip2, 7z, rar, lzip and lz4
+are recognised and refused as `unsupported archive format`, naming the format.
+
+Pick compression by content. Text-heavy sites (HTML, CSS, JS, SVG, JSON):
+tar.gz or ZIP. Already-compressed files (video, images, audio, PDF, fonts):
+plain tar (`tar -cf media.tar -C dir .`) or a stored ZIP (`zip -0 -r`);
+compressing them again costs time and saves nothing. Stronger codecs would not
+let you publish more: `max_extract_bytes` caps the unpacked total and by
+default equals the upload limit (see `server_info`). Keep relative asset paths. Serve
 `index.html` at a directory root; otherwise the root intentionally returns 404.
 `spa: true` enables only extensionless client routes; it is not a global
 fallback.
@@ -143,7 +151,7 @@ completes; check `list_releases` or retry with the same idempotency key.
 | Status | When |
 |---|---|
 | 201 | Published; the body is the release JSON |
-| 400 | Body shorter than declared, SHA-256 mismatch, `unsafe archive entry` or `malformed archive` (see Errors), or `Content-Length` differs from the declared size |
+| 400 | Body shorter than declared, SHA-256 mismatch, `unsafe archive entry`, `unsupported archive format` or `malformed archive` (see Errors), or `Content-Length` differs from the declared size |
 | 401 | Ticket missing, unknown, used, expired or revoked, or a management key was sent (`WWW-Authenticate: Bearer`) |
 | 403 | Cross-origin `Origin` |
 | 404 | Another path, or a query string |
@@ -181,6 +189,9 @@ Errors about a specific file also carry `entry` (the file) and `reason` (why):
   {"error": "unsafe archive entry", "entry": "../evil.html", "reason": "path traversal (..)", "hint": "...", "request_id": "..."}
   ```
 
+- `unsupported archive format`: a known container this server does not read,
+  such as xz or zstd; `reason` names it, for example `detected xz; only ZIP, tar
+  and tar.gz are supported`. Repack as tar.gz, ZIP or plain tar.
 - `malformed archive`: the archive cannot be read. `entry` is absent, or names
   the ZIP member whose data is corrupt or truncated.
 

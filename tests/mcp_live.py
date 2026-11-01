@@ -31,6 +31,7 @@ import shlex
 import shutil
 import struct
 import subprocess
+import lzma
 import tarfile
 import tempfile
 import unittest
@@ -674,6 +675,15 @@ class MCPLive(unittest.TestCase):
         check(error["error"] == "malformed archive", "malformed archive error string mismatch")
         check(isinstance(error.get("reason"), str) and error["reason"].strip(),
               "malformed archive error lacks a reason")
+
+    def test_22_unsupported_format_is_named(self):
+        # Issue #12: known but unsupported containers are named, not "malformed".
+        packed = lzma.compress(self.flat_tar_gz(), format=lzma.FORMAT_XZ)
+        error = self.tool_error("publish_archive", {
+            "label": self.tag + "-xz", "idempotency_key": secrets.token_urlsafe(24),
+            "archive_base64": base64.b64encode(packed).decode()})
+        check(error["error"] == "unsupported archive format", "xz error string mismatch")
+        check("detected xz" in error.get("reason", ""), "xz was not named in the reason")
 
     @unittest.skipUnless(os.environ.get("FSERVER_TEST_LARGE") == "1",
                          "set FSERVER_TEST_LARGE=1 for the 256 MiB upload")

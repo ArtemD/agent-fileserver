@@ -343,3 +343,26 @@ func TestArchiveErrorsNameEntry(t *testing.T) {
 		})
 	}
 }
+
+// Issue #12: recognised but unsupported containers are named, and a tar whose
+// first file name happens to look like such a magic still extracts.
+func TestArchiveUnsupportedFormatsNamed(t *testing.T) {
+	junk := strings.Repeat("\x00\x7f compressed payload ", 64)
+	for name, magic := range map[string]string{"xz": "\xfd7zXZ\x00", "zstd": "\x28\xb5\x2f\xfd", "bzip2": "BZh91AY&SY", "7z": "7z\xbc\xaf\x27\x1c", "rar": "Rar!\x1a\x07\x01\x00", "lzip": "LZIP\x01", "lz4": "\x04\x22\x4d\x18"} {
+		t.Run(name, func(t *testing.T) {
+			for _, b := range [][]byte{[]byte(magic + junk), []byte(magic)} {
+				_, e := extractArtifact(context.Background(), bytes.NewReader(b), t.TempDir(), archiveTestConfig())
+				var ae *archiveError
+				if !errors.As(e, &ae) || !ae.unsupported || !strings.Contains(ae.reason, "detected "+name) {
+					t.Fatalf("got %v", e)
+				}
+			}
+		})
+	}
+	for _, first := range []string{"BZh91AY&SY.txt", "LZIP-notes.txt"} {
+		dst := t.TempDir()
+		if _, e := extractArtifact(context.Background(), bytes.NewReader(fixtureTar(t, tarFixture{first, 0, "x", nil}, tarFixture{"index.html", 0, "x", nil})), dst, archiveTestConfig()); e != nil {
+			t.Fatalf("%s: %v", first, e)
+		}
+	}
+}
