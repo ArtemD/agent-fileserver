@@ -116,6 +116,48 @@ await run("ui_releases", {
     await finish(panel);
   },
 
+  "at phone width each release is a card that fits the frame (issue #30)": async () => {
+    const releases = sample();
+    releases[0] = { ...releases[0], label: "A rather long release name that has to wrap on a phone" };
+    const panel = await open(listResult(releases));
+    await panel.frame.waitForSelector("#rows tr");
+    // Wide frame: a table with a visible header.
+    assert.equal(await panel.frame.$eval("#rows tr", (tr) => getComputedStyle(tr).display), "table-row");
+    assert.ok(await panel.frame.$eval("thead th", (th) => th.getBoundingClientRect().height > 1), "header shown");
+    await panel.resize(375);
+    const layout = await panel.frame.evaluate(() => {
+      const root = document.documentElement;
+      const out = { scroll: root.scrollWidth, client: root.clientWidth, rows: [] };
+      for (const tr of document.querySelectorAll("#rows tr")) {
+        const row = tr.getBoundingClientRect();
+        const name = tr.querySelector("td.c-name").getBoundingClientRect();
+        const boxes = [...tr.querySelectorAll("td, button")].map((n) => n.getBoundingClientRect())
+          .filter((b) => b.width > 0).map((b) => [Math.floor(b.left), Math.ceil(b.right)]);
+        out.rows.push({ display: getComputedStyle(tr).display, rowWidth: row.width, nameWidth: name.width, boxes,
+          buttons: tr.querySelectorAll("button").length, expires: getComputedStyle(tr.querySelector("td.c-exp"), "::before").content });
+      }
+      out.header = document.querySelector("thead").getBoundingClientRect().height;
+      return out;
+    });
+    assert.ok(layout.scroll <= layout.client, `no sideways scroll (${layout.scroll} > ${layout.client})`);
+    assert.ok(layout.header <= 1, "column header hidden visually at phone width");
+    assert.equal(layout.rows.length, releases.length);
+    for (const r of layout.rows) {
+      assert.equal(r.display, "flex", "a row is a card");
+      assert.ok(r.nameWidth >= r.rowWidth - 1, "the name spans the card");
+      assert.ok(r.buttons >= 3, "the actions are there");
+      assert.equal(r.expires, '"Expires "', "the expiry is labelled");
+      for (const [left, right] of r.boxes) {
+        assert.ok(left >= 0 && right <= layout.client, `cell or button [${left}, ${right}] inside the ${layout.client}px frame`);
+      }
+    }
+    await expectContentSize(panel);
+    // Back to a wide frame: the table returns.
+    await panel.resize(760);
+    assert.equal(await panel.frame.$eval("#rows tr", (tr) => getComputedStyle(tr).display), "table-row");
+    await finish(panel);
+  },
+
   "filter narrows rows case-insensitively": async () => {
     const panel = await open(listResult(sample()));
     await panel.frame.fill("#filter", "ALPHA");

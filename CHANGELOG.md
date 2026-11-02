@@ -29,6 +29,11 @@ Each release on GitHub also lists every commit and the issues it closed.
   send `ui/notifications/size-changed` only when the size changed and only after
   the handshake. Nothing to do for clients or operators
   ([#28](https://github.com/ArtemD/agent-fileserver/issues/28)).
+- The releases dashboard fits a phone. Below 700px each release is a card
+  (name and token, then size, access, date and expiry, then the buttons)
+  instead of a six-column table that hid Expires and the buttons behind a
+  sideways scroll in the Claude mobile app. Nothing to do for clients or
+  operators ([#30](https://github.com/ArtemD/agent-fileserver/issues/30)).
 
 ## [0.4.0] - 2026-11-02
 

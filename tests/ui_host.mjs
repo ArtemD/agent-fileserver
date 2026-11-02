@@ -115,6 +115,12 @@ export async function openPanel(file, { onCall, hostContext = { theme: "light" }
       const b = document.body.getBoundingClientRect();
       return { width: Math.ceil(b.width), height: Math.ceil(b.height) };
     }),
+    // resize sets the frame's width (a phone is about 375px), as a host does.
+    resize: async (width) => {
+      await page.setViewportSize({ width: Math.max(width, 320), height: FRAME.height + 100 });
+      await page.evaluate((w) => { document.getElementById("app").style.width = w + "px"; }, width);
+      await panel.settle();
+    },
     close: () => { openBrowsers.delete(browser); return browser.close(); },
   };
   await panel.initialized();

@@ -306,7 +306,7 @@ of that `ui://` URI, MIME type `text/html;profile=mcp-app`.
 | Resource | Shown for | Content |
 |---|---|---|
 | `ui://agent-fileserver/release.html` | `publish_files`, `publish_archive`, `release_info`, `set_expiry`, `set_password`, `remove_password` | Release card: link with copy and open, access, size, dates, and expiry with *Keep 30 days*, *1 year* and *forever* buttons that call `set_expiry` |
-| `ui://agent-fileserver/releases.html` | `list_releases` | Dashboard: totals, filter, sort by newest, largest or expiring; per row open, copy, keep forever (`set_expiry` with 0) and delete (`delete_release`, after a confirming second click) |
+| `ui://agent-fileserver/releases.html` | `list_releases` | Dashboard: totals, filter, sort by newest, largest or expiring; per row open, copy, keep forever (`set_expiry` with 0) and delete (`delete_release`, after a confirming second click); below 700px wide each row is a stacked card |
 | `ui://agent-fileserver/upload.html` | `upload_from_computer` | Upload panel: the user drops or picks a file, the panel hashes it with SHA-256, calls `begin_upload` with the tool's options, sends the bytes with `PUT /_upload` and a progress bar, shows the release and tells the agent the URL |
 
 The resources carry `_meta.ui` with `prefersBorder` and the `clipboardWrite`

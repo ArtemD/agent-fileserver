@@ -21,6 +21,19 @@
   .actions button { padding: 2px 8px; font-size: 13px; }
   .rowerr { margin-top: 4px; }
   button.danger.confirm { background: var(--fs-danger); border-color: var(--fs-danger); color: #fff; }
+  /* Phone width: each release is a stacked card instead of a table row, so
+     nothing hides behind a sideways scroll. The header stays for screen readers. */
+  @media (max-width: 699px) {
+    .tablewrap { overflow-x: visible; }
+    table, tbody, tr, td { display: block; }
+    thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+    tr { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; padding: 10px 0; border-bottom: 1px solid var(--fs-border); }
+    td { padding: 0; border: 0; }
+    td.num { text-align: left; }
+    td.c-name, td.c-actions { flex: 1 1 100%; min-width: 0; }
+    td.c-actions { margin-top: 4px; }
+    td.c-exp::before { content: "Expires "; color: var(--fs-text-2); font-size: 12px; }
+  }
 </style></head>
 <body>
 <main id="app">
@@ -114,7 +127,7 @@
     if (r.expires_at) { actions.appendChild(btn("Keep forever", null, function () { onKeep(e); })); }
     actions.appendChild(btn(e.confirming ? "Confirm delete" : "Delete", e.confirming ? "danger confirm" : "danger", function () { onDelete(e); }));
 
-    var nameCell = el("td", null,
+    var nameCell = el("td", { class: "c-name" },
       el("div", { class: "name" }, nameOf(r)),
       el("div", { class: "tok muted mono" }, r.token || ""));
     if (e.err) {
@@ -126,11 +139,11 @@
     var dateStr = f.fmtDate(r.updated_at || r.created_at);
     tr.replaceChildren(
       nameCell,
-      el("td", { class: "num" }, f.fmtBytes(r.bytes)),
-      el("td", null, el("span", { class: "badge" + (r.protected ? " ok" : "") }, r.protected ? "Password" : "Public")),
-      el("td", { class: "nowrap" }, dateStr ? el("span", null, el("span", { class: "muted small" }, when + " "), dateStr) : ""),
-      el("td", { class: "nowrap" }, expiryCell(r)),
-      el("td", null, actions));
+      el("td", { class: "num c-size" }, f.fmtBytes(r.bytes)),
+      el("td", { class: "c-access" }, el("span", { class: "badge" + (r.protected ? " ok" : "") }, r.protected ? "Password" : "Public")),
+      el("td", { class: "nowrap c-date" }, dateStr ? el("span", null, el("span", { class: "muted small" }, when + " "), dateStr) : ""),
+      el("td", { class: "nowrap c-exp" }, expiryCell(r)),
+      el("td", { class: "c-actions" }, actions));
   }
 
   function makeEntry(r) {

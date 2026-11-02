@@ -170,7 +170,9 @@ it outside the repository as above (CI uses `$RUNNER_TEMP/pw`). Use another
   1 year and forever buttons calling `set_expiry`, and errors shown with their
   `hint`.
 - `ui_releases.test.mjs`: totals, filter, sort by newest, largest and expiring,
-  open, copy, keep forever, and delete only after a confirming second click.
+  open, copy, keep forever, delete only after a confirming second click, and the
+  phone-width card layout (375px frame: no sideways scroll, every cell and
+  button inside the frame, the table back at 760px).
 - `ui_upload.test.mjs`: pick or drop a file, SHA-256, the `begin_upload` call
   with the tool's options, the `PUT` with progress, the shown release, the
   message to the agent, archives as sites versus *Publish as one file*, and

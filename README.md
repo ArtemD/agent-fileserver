@@ -170,7 +170,7 @@ without a panel.
 | Panel | Shown for | What it does |
 |---|---|---|
 | Release card | `publish_files`, `publish_archive`, `release_info`, `set_expiry`, `set_password`, `remove_password` | The link with copy and open buttons, access, size, dates and expiry, with *Keep 30 days*, *1 year* and *forever* buttons |
-| Releases dashboard | `list_releases` | Totals, a filter, sorting by newest, largest or expiring, and per release: open, copy, keep forever and delete (a second click confirms) |
+| Releases dashboard | `list_releases` | Totals, a filter, sorting by newest, largest or expiring, and per release: open, copy, keep forever and delete (a second click confirms). On a phone each release is a card instead of a table row |
 | Upload panel | `upload_from_computer` | You drop or pick a file; the panel checks its SHA-256, asks for a ticket, sends the bytes with a progress bar and shows the release |
 
 Ask *"let me upload a file from my computer"* to get the upload panel. A
