@@ -20,7 +20,7 @@ cp .env.example .env    # then edit
 
 | Variable | Meaning |
 |---|---|
-| `FSERVER_DOMAIN` | Public hostname (no scheme). Release URLs are `https://FSERVER_DOMAIN/…` |
+| `FSERVER_DOMAIN` | Public hostname (no scheme). Release URLs are `https://FSERVER_DOMAIN/…`, built at response time, so after a change every release reports the new domain |
 | `FSERVER_MODE` | `proxy` (default) or `direct` |
 | `FSERVER_LISTEN` | Proxy mode host address, default `127.0.0.1:8000` |
 | `FSERVER_DATA_DIR` | Host directory for releases, policies and key hashes (`./data`) |
@@ -184,6 +184,13 @@ Releases are published only after the full test suite passes on the tag; each
 lists its commits and the issues they closed.
 
 Data, keys and passwords live in the data directory and survive rebuilds.
+
+**Changing the domain:** set the new `FSERVER_DOMAIN` in `.env` and run
+`docker compose up -d --wait`. Every release, old and new, reports links on the
+new domain from the first response; no migration runs and no manifest is
+rewritten. Links already handed out on the old domain keep working only while
+that hostname still reaches this server, so keep it pointed here (or redirect
+it) until those links have aged out.
 
 **Upgrading to the release with panels:** a new tool, `upload_from_computer`,
 and three `ui://` resources appear; the server now also declares the

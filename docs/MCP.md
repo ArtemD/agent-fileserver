@@ -122,6 +122,12 @@ name. Publish the same file name to keep the exact URL; the `url` in the result
 says where the content is now. The root `/TOKEN/` URL always stays valid for a
 site or a one-page `index.html`.
 
+Every `url` in a result is built when the result is sent, from the server's
+current public origin (`FSERVER_DOMAIN`). When the operator moves the server to
+another domain, every release, old or new, reports links on the new domain at
+once. Do not store a `url` as the release's identity: keep the `token` and ask
+`release_info` for the current link.
+
 The swap is atomic where the filesystem allows it: visitors see the old tree or
 the new tree, never a mix. On a filesystem without that support the release
 returns 404 for under a millisecond during the swap. A new password is stored

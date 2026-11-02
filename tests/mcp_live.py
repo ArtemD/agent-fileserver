@@ -17,8 +17,9 @@ Flat tar.gz sites (also with ./ prefixes) publish through MCP and upload tickets
 and refused archives return typed errors with entry/reason/hint (issue #11).
 Release lifecycle (issues #19-#22): default and explicit expiry with set_expiry,
 update in place with token, the disk block in server_info, the list_releases
-totals object and the public Cache-Control. Real expiry deletion is covered by
-Go tests, not here. FSERVER_TEST_DEFAULT_EXPIRY_DAYS (default 60, the compose
+totals object and the public Cache-Control. Every listed release reports
+its url on the same origin as a fresh publish (issue #26). Real expiry
+deletion is covered by Go tests, not here. FSERVER_TEST_DEFAULT_EXPIRY_DAYS (default 60, the compose
 default) is the default_expiry_days this stack is expected to report.
 MCP Apps panels (issues #23-#25): ui:// resources over resources/list and
 resources/read, the tool-to-panel links in tools/list, upload_from_computer, and
@@ -431,6 +432,15 @@ class MCPLive(unittest.TestCase):
               and isinstance(items.get("releases"), list)
               and any(item.get("token") == view["token"] for item in items["releases"]),
               "MCP list/info mismatch")
+        # URLs are built from the current base URL at response time (issue
+        # #26): every release, however old, reports the origin a fresh publish
+        # reports, at /TOKEN/ or /TOKEN/NAME.
+        origin = urlsplit(view["url"])._replace(path="").geturl()
+        check(info.get("url") == view["url"], "release_info url differs from publish url")
+        for item in items["releases"]:
+            url = item.get("url")
+            check(isinstance(url, str) and url.startswith(origin + "/" + item.get("token", "") + "/"),
+                  "list_releases url is not on the current base URL")
 
     def test_07_download_base64_original_hash(self):
         label = self.tag + "-download"

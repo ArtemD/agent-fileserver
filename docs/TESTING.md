@@ -59,6 +59,13 @@ sweeper, the sweeper's re-check under the lock, legacy manifests that never expi
 content replaced, policy, label and expiry kept or replaced, the exchange swap
 and its two-rename fallback, a missing or malformed token, idempotency with
 `token`), the `disk` report in `server_info` and the `list_releases` totals.
+It also publishes a single file and a website under one base URL, restarts on
+another and checks that `list_releases`, `release_info`, `set_expiry`, the
+password tools, the internal release core and an update all report the new one
+(issue #26); `publish_test.go` checks the same at the store level, including
+manifests whose stored `url` is stale or missing. `tests/mcp_live.py` checks on
+the running stack that every listed release reports the origin of a fresh
+publish.
 
 The optional large test allocates hundreds of MiB on the test machine:
 

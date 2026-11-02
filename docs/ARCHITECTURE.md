@@ -89,6 +89,13 @@ An update without a password keeps the current policy; only `remove_password`
 makes a release public. The manifest is written before the swap and restored if
 the swap fails.
 
+Release URLs are derived, never trusted from disk. Every read of a manifest
+replaces its stored `url` with one built from the current `FSERVER_BASE_URL`,
+the token and `original_filename` (`/TOKEN/NAME` for a single file other than
+`index.html`, `/TOKEN/` otherwise), and publish and update build it the same
+way. The `url` is still written to the manifest so that a downgrade to an older
+version has a link to show, but nothing reads it back.
+
 Releases expire (60 days by default, operator setting, 0 = never). Expiry fails
 closed at the authorization check: every release request goes through
 `/_internal/authorize`, which answers 404 from the instant of `expires_at`,

@@ -416,13 +416,15 @@ type stagedRelease struct {
 	files, bytes     int64
 }
 
-// url is where the release content is served under token.
-func (r *stagedRelease) url(base, token string) string {
-	u := base + "/" + token + "/"
-	// A lone index.html is a one-page site: the static server already
-	// serves it at the release root, so report that shareable URL.
-	if r.single && r.name != "index.html" {
-		u += url.PathEscape(r.name)
+// releaseURL is where m is served, built from the current base URL at
+// response time. The url stored in a manifest is never read: after the
+// domain changes it would hand out the old host. A single file is served at
+// /TOKEN/NAME; a website, and a lone index.html (the static server already
+// serves it at the release root), at /TOKEN/.
+func (s *store) releaseURL(m manifest) string {
+	u := s.baseURL + "/" + m.Token + "/"
+	if m.OriginalFilename != "" && m.OriginalFilename != "index.html" {
+		u += url.PathEscape(m.OriginalFilename)
 	}
 	return u
 }
@@ -532,10 +534,10 @@ func (s *store) activateLocked(ctx context.Context, r *stagedRelease, o releaseO
 	m.SourceBasename = r.name
 	m.SPA = o.SPA
 	m.ExpiresAt = o.ExpiresAt
-	m.URL = r.url(s.baseURL, token)
 	if r.single {
 		m.OriginalFilename = r.name
 	}
+	m.URL = s.releaseURL(m)
 	if err = s.writeManifest(m); err != nil {
 		return m, err
 	}
@@ -585,7 +587,7 @@ func (s *store) replaceLocked(ctx context.Context, r *stagedRelease, o releaseOp
 	if r.single {
 		m.OriginalFilename = r.name
 	}
-	m.URL = r.url(s.baseURL, old.Token)
+	m.URL = s.releaseURL(m)
 	if o.Label != "" {
 		m.Label = o.Label
 	}
@@ -887,6 +889,7 @@ func (s *store) activeManifest(token string) (manifest, error) {
 	if m.Token != token {
 		return m, fmt.Errorf("manifest token mismatch for %s", token)
 	}
+	m.URL = s.releaseURL(m)
 	return m, nil
 }
 func (s *store) info(token string) (manifest, error) {

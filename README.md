@@ -261,7 +261,9 @@ FSERVER_VERSION=$(git describe --tags --always --dirty) docker compose up -d --b
 ```
 
 Upgrades keep keys, passwords and releases (they live in `./data`). Existing
-releases keep no expiry; nothing is deleted on upgrade.
+releases keep no expiry; nothing is deleted on upgrade. Changing
+`FSERVER_DOMAIN` moves every release link to the new domain at once (see
+[docs/INSTALL.md](docs/INSTALL.md#upgrades)).
 
 ## Releases
 

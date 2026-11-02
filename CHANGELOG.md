@@ -10,6 +10,19 @@ Each release on GitHub also lists every commit and the issues it closed.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-02
+
+### Fixed
+
+- Release URLs follow the current domain. Every `url` in MCP results is now
+  built from `FSERVER_BASE_URL` (that is, `FSERVER_DOMAIN`) when the result is
+  sent, not taken from the value stored at publish time, so after a domain
+  change old releases stop reporting the old host (and the panels, which
+  open only links on the current domain, show them again). The `url` field and the
+  manifest format are unchanged and no migration runs; operators who change the
+  domain should keep the old hostname pointed at the server while old links are
+  still in use ([#26](https://github.com/ArtemD/agent-fileserver/issues/26)).
+
 ## [0.4.0] - 2026-11-02
 
 ### Added
@@ -129,7 +142,8 @@ Each release on GitHub also lists every commit and the issues it closed.
   passwords, per-agent keys administered from the host, and hardened
   containers.
 
-[Unreleased]: https://github.com/ArtemD/agent-fileserver/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/ArtemD/agent-fileserver/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/ArtemD/agent-fileserver/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/ArtemD/agent-fileserver/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/ArtemD/agent-fileserver/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/ArtemD/agent-fileserver/compare/v0.1.0...v0.2.0

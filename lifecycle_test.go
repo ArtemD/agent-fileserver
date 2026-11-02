@@ -766,3 +766,92 @@ func TestEnvExpiryDays(t *testing.T) {
 		t.Fatalf("unset: %d %v", got, err)
 	}
 }
+
+// TestLifecycleURLFollowsBaseURL publishes a single file and a website under
+// base URL A, restarts on base URL B, and checks every result that carries a
+// release URL reports B: the url stored in the manifest is never read.
+func TestLifecycleURLFollowsBaseURL(t *testing.T) {
+	const oldBase, newBase = "https://old.example.test", "https://new.example.test"
+	f := testAPI(t)
+	oldStore, err := newStore(f.a.s.root, oldBase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.a, err = newAPIServer(oldStore, f.tokens, f.a.cfg); err != nil {
+		t.Fatal(err)
+	}
+	single, _ := mcpView(t, f, "publish_files", fileArgs("hello.txt", "single", nil))
+	site, _ := mcpView(t, f, "publish_files", map[string]any{"idempotency_key": requestID(), "files": []map[string]any{
+		{"path": "index.html", "text": "<h1>hi</h1>"}, {"path": "style.css", "text": "body{}"}}})
+	if single.URL != oldBase+"/"+single.Token+"/hello.txt" || site.URL != oldBase+"/"+site.Token+"/" {
+		t.Fatalf("publish under A: %s %s", single.URL, site.URL)
+	}
+
+	// Restart with the new domain; the manifests on disk still say A.
+	newS, err := newStore(f.a.s.root, newBase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.a, err = newAPIServer(newS, f.tokens, f.a.cfg); err != nil {
+		t.Fatal(err)
+	}
+	if raw, err := os.ReadFile(filepath.Join(newS.manifests, single.Token+".json")); err != nil || !strings.Contains(string(raw), oldBase) {
+		t.Fatalf("test needs a manifest that still stores A: %v", err)
+	}
+	want := map[string]string{single.Token: newBase + "/" + single.Token + "/hello.txt", site.Token: newBase + "/" + site.Token + "/"}
+	check := func(what, token, got string) {
+		t.Helper()
+		if got != want[token] {
+			t.Fatalf("%s: url %q, want %q", what, got, want[token])
+		}
+	}
+
+	var l struct {
+		Releases []releaseView `json:"releases"`
+	}
+	if err := json.Unmarshal(mcpTool(t, f, "list_releases", map[string]any{}, false), &l); err != nil || len(l.Releases) != 2 {
+		t.Fatalf("list_releases: %+v %v", l, err)
+	}
+	for _, v := range l.Releases {
+		check("list_releases", v.Token, v.URL)
+	}
+	for token := range want {
+		v, _ := mcpView(t, f, "release_info", map[string]any{"token": token})
+		check("release_info", token, v.URL)
+		v, _ = mcpView(t, f, "set_expiry", map[string]any{"token": token, "expires_in_days": 5})
+		check("set_expiry", token, v.URL)
+		v, _ = mcpView(t, f, "set_password", map[string]any{"token": token, "password": "visitor-password"})
+		check("set_password", token, v.URL)
+		var reset struct {
+			Release releaseView `json:"release"`
+		}
+		if err := json.Unmarshal(mcpTool(t, f, "reset_password", map[string]any{"token": token}, false), &reset); err != nil {
+			t.Fatal(err)
+		}
+		check("reset_password", token, reset.Release.URL)
+		v, _ = mcpView(t, f, "remove_password", map[string]any{"token": token})
+		check("remove_password", token, v.URL)
+		w := f.do("GET", "/_api/v1/releases/"+token, nil, "", "")
+		assertAPIStatus(t, w, 200)
+		var api releaseView
+		if err := json.Unmarshal(w.Body.Bytes(), &api); err != nil {
+			t.Fatal(err)
+		}
+		check("GET /_api/v1/releases/TOKEN", token, api.URL)
+	}
+
+	// An update in place reports B for both shapes, and rewrites the manifest.
+	up, _ := mcpView(t, f, "publish_files", fileArgs("hello.txt", "new bytes", map[string]any{"token": single.Token}))
+	check("update single file", single.Token, up.URL)
+	up, _ = mcpView(t, f, "publish_files", map[string]any{"token": site.Token, "idempotency_key": requestID(), "files": []map[string]any{
+		{"path": "index.html", "text": "<h1>new</h1>"}, {"path": "style.css", "text": "body{}"}}})
+	check("update website", site.Token, up.URL)
+	if raw, err := os.ReadFile(filepath.Join(newS.manifests, site.Token+".json")); err != nil || strings.Contains(string(raw), oldBase) {
+		t.Fatalf("updated manifest still stores A: %s %v", raw, err)
+	}
+
+	// begin_upload's upload_url is on B too.
+	if v := beginUpload(t, f, beginArgs([]byte("x"), map[string]any{"filename": "x.txt"})); !strings.HasPrefix(v.UploadURL, newBase+"/") {
+		t.Fatalf("upload_url %q", v.UploadURL)
+	}
+}

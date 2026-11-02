@@ -650,3 +650,66 @@ func TestCLIRefusesLocalPublishing(t *testing.T) {
 		t.Fatal("refused CLI command touched filesystem state")
 	}
 }
+
+// TestURLBuiltFromCurrentBaseURL: a store reopened on another base URL reports
+// that base for releases published before the change, whatever url the
+// manifest stores, and old manifests with any url still load.
+func TestURLBuiltFromCurrentBaseURL(t *testing.T) {
+	s := testStore(t)
+	dir := sourceDir(t)
+	put(t, dir, "index.html", []byte("<h1>site</h1>"))
+	put(t, dir, "app.js", []byte("x"))
+	site, _, err := s.publish(dir, "site", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, _, err := s.publish(put(t, sourceDir(t), "a b.txt", []byte("one")), "file", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, _, err := s.publish(put(t, sourceDir(t), "index.html", []byte("<p>page</p>")), "page", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A manifest from an older version with a stale or missing url.
+	legacy := page
+	legacy.URL = "https://stale.example.test/anything"
+	if err = s.writeManifest(legacy); err != nil {
+		t.Fatal(err)
+	}
+	b, err := newStore(s.root, "https://b.example.test/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		site.Token: "https://b.example.test/" + site.Token + "/",
+		file.Token: "https://b.example.test/" + file.Token + "/a%20b.txt",
+		page.Token: "https://b.example.test/" + page.Token + "/",
+	}
+	all, err := b.list()
+	if err != nil || len(all) != 3 {
+		t.Fatalf("list: %v %v", all, err)
+	}
+	for _, m := range all {
+		if m.URL != want[m.Token] {
+			t.Fatalf("list %s: %s", m.Token, m.URL)
+		}
+		if got, err := b.info(m.Token); err != nil || got.URL != want[m.Token] {
+			t.Fatalf("info %s: %s %v", m.Token, got.URL, err)
+		}
+		if got, err := b.setExpiry(m.Token, nil); err != nil || got.URL != want[m.Token] {
+			t.Fatalf("setExpiry %s: %s %v", m.Token, got.URL, err)
+		}
+	}
+	missing := file
+	missing.URL = ""
+	if err = b.writeManifest(missing); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := b.info(file.Token); err != nil || got.URL != want[file.Token] {
+		t.Fatalf("manifest without url: %s %v", got.URL, err)
+	}
+	if got, err := b.deleteRelease(site.Token); err != nil || got.URL != want[site.Token] {
+		t.Fatalf("delete: %s %v", got.URL, err)
+	}
+}
