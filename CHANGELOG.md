@@ -10,16 +10,6 @@ Each release on GitHub also lists every commit and the issues it closed.
 
 ## [Unreleased]
 
-### Fixed
-
-- Panels report their content height. They sent the iframe's own height
-  (`scrollHeight` of the root, which is never below the viewport), so a host
-  could grow a panel but never shrink it, and they resent the same size on
-  every layout change. They now measure the content like the ext-apps SDK and
-  send `ui/notifications/size-changed` only when the size changed and only after
-  the handshake. Nothing to do for clients or operators
-  ([#28](https://github.com/ArtemD/agent-fileserver/issues/28)).
-
 ## [0.4.1] - 2026-11-02
 
 ### Fixed
@@ -32,6 +22,13 @@ Each release on GitHub also lists every commit and the issues it closed.
   manifest format are unchanged and no migration runs; operators who change the
   domain should keep the old hostname pointed at the server while old links are
   still in use ([#26](https://github.com/ArtemD/agent-fileserver/issues/26)).
+- Panels report their content height. They sent the iframe's own height
+  (`scrollHeight` of the root, which is never below the viewport), so a host
+  could grow a panel but never shrink it, and they resent the same size on
+  every layout change. They now measure the content like the ext-apps SDK and
+  send `ui/notifications/size-changed` only when the size changed and only after
+  the handshake. Nothing to do for clients or operators
+  ([#28](https://github.com/ArtemD/agent-fileserver/issues/28)).
 
 ## [0.4.0] - 2026-11-02
 
