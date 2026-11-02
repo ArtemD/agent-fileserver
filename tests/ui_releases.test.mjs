@@ -1,7 +1,7 @@
 // Browser tests for the releases dashboard panel (ui/releases.html, issue #24).
 // Run: node tests/ui_releases.test.mjs (needs playwright + Chromium, see ui_host.mjs).
 import assert from "node:assert/strict";
-import { openPanel, textResult, run, BASE } from "./ui_host.mjs";
+import { openPanel, textResult, run, BASE, expectContentSize } from "./ui_host.mjs";
 
 const DAY = 86400000;
 const iso = (offsetDays) => new Date(Date.now() + offsetDays * DAY).toISOString();
@@ -46,6 +46,20 @@ async function finish(panel) {
 }
 
 await run("ui_releases", {
+  "reports its content height, grows and shrinks with it, never resends a size": async () => {
+    const panel = await open(null);
+    const waiting = await expectContentSize(panel);
+    await panel.toolResult(listResult(sample().slice(0, 2)));
+    await panel.frame.waitForSelector("#rows tr");
+    const table = await expectContentSize(panel);
+    assert.ok(table.height > waiting.height, "the dashboard is taller than the waiting line");
+    await panel.toolResult(textResult({ error: "unauthorized", hint: "Check the key." }, true));
+    await panel.frame.waitForFunction(() => /unauthorized/.test(document.getElementById("status").textContent));
+    const error = await expectContentSize(panel);
+    assert.ok(error.height < table.height, "the panel reports a smaller size after its content shrinks");
+    await finish(panel);
+  },
+
   "waits for the result, then renders totals and rows": async () => {
     const panel = await open(null);
     assert.match(await panel.frame.textContent("#status"), /Waiting for the result/);

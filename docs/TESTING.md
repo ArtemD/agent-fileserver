@@ -176,6 +176,12 @@ it outside the repository as above (CI uses `$RUNNER_TEMP/pw`). Use another
   titled "Website"; the upload tests check that the password and the upload
   ticket never appear in the panel. Every test checks that the panel raises no
   script errors.
+- All three check sizing in a frame taller than the panel (`FRAME` in
+  `ui_host.mjs`, 760×900): the last `size-changed` equals the content box and is
+  below the frame height, nothing is sent before `initialized`, an identical
+  size is never sent twice, and repeated `resize()` calls with nothing changed
+  send nothing. The card and dashboard tests also check that the reported height
+  grows with the content and shrinks again.
 
 ## CI
 

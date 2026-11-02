@@ -15,6 +15,9 @@ const { chromium } = require("playwright");
 const UI = join(dirname(fileURLToPath(import.meta.url)), "..", "ui");
 
 export const BASE = "https://files.example.com";
+// FRAME is the panel iframe's size: taller than any panel's first view, so a
+// panel that reported the frame instead of its content would show up.
+export const FRAME = { width: 760, height: 900 };
 
 // Every browser a test opens, so run() can close them even when a test throws.
 const openBrowsers = new Set();
@@ -39,7 +42,7 @@ export function textResult(value, isError = false) {
 }
 
 const HOST_PAGE = `<!doctype html><html><body style="margin:0">
-<iframe id="app" sandbox="allow-scripts allow-forms" style="width:760px;height:900px;border:0"></iframe>
+<iframe id="app" sandbox="allow-scripts allow-forms" style="width:${FRAME.width}px;height:${FRAME.height}px;border:0"></iframe>
 <script>
   window.__msgs = [];
   const frame = document.getElementById("app");
@@ -100,10 +103,45 @@ export async function openPanel(file, { onCall, hostContext = { theme: "light" }
     initialized: () => panel.waitFor("ui/notifications/initialized"),
     toolInput: (args) => panel.notify("ui/notifications/tool-input", { arguments: args }),
     toolResult: (result) => panel.notify("ui/notifications/tool-result", result),
+    // sizes lists every size-changed report; settle waits two animation frames
+    // in the panel (a report is measured in one) plus the postMessage hop.
+    sizes: async () => (await panel.messages("ui/notifications/size-changed")).map((m) => m.params),
+    settle: async () => {
+      await frame.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+      await page.waitForTimeout(50);
+    },
+    // contentSize is what the panel should report: its rendered content box.
+    contentSize: () => frame.evaluate(() => {
+      const b = document.body.getBoundingClientRect();
+      return { width: Math.ceil(b.width), height: Math.ceil(b.height) };
+    }),
     close: () => { openBrowsers.delete(browser); return browser.close(); },
   };
   await panel.initialized();
   return panel;
+}
+
+// expectContentSize checks the panel's last size report against its content:
+// it matches the content box, is shorter than the frame (so a host can shrink
+// the frame), came after the handshake, and is not resent while nothing changes.
+export async function expectContentSize(panel) {
+  await panel.settle();
+  const sizes = await panel.sizes();
+  assert.ok(sizes.length > 0, "a size was reported");
+  const last = sizes[sizes.length - 1];
+  assert.ok(last.height < FRAME.height, `height ${last.height} is below the ${FRAME.height}px frame`);
+  assert.deepEqual(last, await panel.contentSize(), "last report is the content size");
+  const all = await panel.messages();
+  const init = all.findIndex((m) => m.method === "ui/notifications/initialized");
+  const first = all.findIndex((m) => m.method === "ui/notifications/size-changed");
+  assert.ok(init >= 0 && first > init, "no size report before initialized");
+  for (let i = 1; i < sizes.length; i++) {
+    assert.notDeepEqual(sizes[i], sizes[i - 1], "an identical size is never sent twice in a row");
+  }
+  await panel.frame.evaluate(() => { for (let i = 0; i < 5; i++) { window.fserver.resize(); } });
+  await panel.settle();
+  assert.equal((await panel.sizes()).length, sizes.length, "resize() with nothing changed sends nothing");
+  return last;
 }
 
 // run executes named async tests sequentially and exits non-zero on failure.

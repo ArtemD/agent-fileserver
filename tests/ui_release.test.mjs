@@ -1,7 +1,7 @@
 // Browser tests for the release card panel (ui/release.html), run with
 // `node tests/ui_release.test.mjs` against the mock MCP Apps host.
 import assert from "node:assert/strict";
-import { openPanel, textResult, run, BASE } from "./ui_host.mjs";
+import { openPanel, textResult, run, BASE, expectContentSize } from "./ui_host.mjs";
 
 const TOKEN = "AbCdEfGhIjKlMnOpQrStUv";
 const DAY = 86400000;
@@ -33,6 +33,18 @@ const btn = (panel, name) => panel.frame.getByRole("button", { name, exact: true
 const waitText = (panel, s) => panel.frame.getByText(s).first().waitFor({ timeout: 5000 });
 
 await run("ui_release", {
+  "reports its content height, grows and shrinks with it, never resends a size": () => withPanel({}, async (p) => {
+    const waiting = await expectContentSize(p);
+    await p.toolResult(textResult(view({ label: "My site" })));
+    await waitText(p, "My site");
+    const card = await expectContentSize(p);
+    assert.ok(card.height > waiting.height, "the card is taller than the waiting line");
+    await p.notify("ui/notifications/tool-cancelled", {});
+    await waitText(p, "Cancelled.");
+    const cancelled = await expectContentSize(p);
+    assert.ok(cancelled.height < card.height, "the panel reports a smaller size after its content shrinks");
+  }),
+
   "waiting state before a result": () => withPanel({}, async (p) => {
     assert.match(await text(p), /Waiting for the result…/);
   }),

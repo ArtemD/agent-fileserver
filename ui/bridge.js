@@ -20,6 +20,27 @@
     });
   }
   function notify(method, params) { post({ jsonrpc: "2.0", method: method, params: params || {} }); }
+  // Content size, measured like the ext-apps SDK: the root element's
+  // scrollHeight is never below the viewport, so it would report the iframe's
+  // own height and the panel could never shrink. With height: max-content the
+  // root shrinks to its content for one synchronous read, then the previous
+  // inline value is restored before the browser paints.
+  var sizeScheduled = false;
+  var initialized = false;
+  var lastSize = null;
+  function measure() {
+    sizeScheduled = false;
+    if (!initialized) { return; }
+    var root = document.documentElement;
+    var prev = root.style.height;
+    root.style.height = "max-content";
+    var b = root.getBoundingClientRect();
+    root.style.height = prev;
+    var size = { width: Math.ceil(b.width), height: Math.ceil(b.height) };
+    if (lastSize && lastSize.width === size.width && lastSize.height === size.height) { return; }
+    lastSize = size;
+    notify("ui/notifications/size-changed", size);
+  }
   function emit(kind, value) { handlers[kind].forEach(function (cb) { try { cb(value); } catch (e) { console.error(e); } }); }
 
   function applyContext(ctx) {
@@ -107,9 +128,12 @@
     updateContext: function (text) {
       return request("ui/update-model-context", { content: [{ type: "text", text: String(text) }] }).catch(function () {});
     },
+    // resize reports the content size to the host, at most once per frame
+    // and only when it changed. Panels call it after they redraw.
     resize: function () {
-      var b = document.documentElement.getBoundingClientRect();
-      notify("ui/notifications/size-changed", { width: Math.ceil(b.width), height: Math.ceil(document.documentElement.scrollHeight) });
+      if (sizeScheduled) { return; }
+      sizeScheduled = true;
+      (window.requestAnimationFrame || function (cb) { return setTimeout(cb, 16); })(measure);
     },
     copy: function (text) {
       if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -175,10 +199,13 @@
   }).then(function (result) {
     applyContext(result && result.hostContext);
     notify("ui/notifications/initialized", {});
+    initialized = true;
     fserver.resize();
     return result;
   });
   if (window.ResizeObserver) {
-    new ResizeObserver(function () { fserver.resize(); }).observe(document.documentElement);
+    var observer = new ResizeObserver(function () { fserver.resize(); });
+    observer.observe(document.documentElement);
+    if (document.body) { observer.observe(document.body); }
   }
 })();

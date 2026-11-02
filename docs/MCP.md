@@ -325,6 +325,10 @@ How the panels work:
 - Their buttons call existing tools through the host, so the same key, audit
   log, rate limits and checks apply. A panel adds no capability a tool call does
   not have. Delete needs two clicks.
+- They report their content size to the host with
+  `ui/notifications/size-changed` (measured like the ext-apps SDK, with the root
+  set to `max-content` for the read), at most once per frame and only when the
+  width or height changed, so a host can shrink a panel as well as grow it.
 - Claude asks the user before it shows an app the first time, and `ui/open-link`
   shows a confirmation. Claude currently restricts frame domains, so the card
   has no embedded preview of the site.

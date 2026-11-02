@@ -5,7 +5,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { openPanel, textResult, run, BASE } from "./ui_host.mjs";
+import { openPanel, textResult, run, BASE, expectContentSize } from "./ui_host.mjs";
 
 const tmp = mkdtempSync(join(tmpdir(), "ui-upload-"));
 const sha = (b) => createHash("sha256").update(b).digest("hex");
@@ -98,6 +98,12 @@ async function finish(t) {
 
 const zipBytes = randomBytes(5000);
 const tests = {
+  "reports its content height and never resends a size": async () => {
+    const t = await setup();
+    await expectContentSize(t.panel);
+    await finish(t);
+  },
+
   "sha256 matches node:crypto for empty, abc and 9 MiB random": async () => {
     const t = await setup();
     const big = randomBytes(9 * 1024 * 1024);
