@@ -160,6 +160,13 @@ interactive panel for some tools. You connect the same way and nothing needs
 configuring: panels appear automatically. The first time, Claude asks you to
 allow the app. Clients without MCP Apps get the same text results as before.
 
+Where panels show: regular Claude chats on the web, desktop and mobile. Claude
+Code and agent-mode sessions (Claude working with its own file and shell tools)
+call the tools as text and show no panel, even with the same connector; there
+`upload_from_computer` may not be offered at all, so use `begin_upload` from the
+sandbox. Every tool returns the same text result everywhere, so nothing breaks
+without a panel.
+
 | Panel | Shown for | What it does |
 |---|---|---|
 | Release card | `publish_files`, `publish_archive`, `release_info`, `set_expiry`, `set_password`, `remove_password` | The link with copy and open buttons, access, size, dates and expiry, with *Keep 30 days*, *1 year* and *forever* buttons |

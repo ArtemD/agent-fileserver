@@ -292,6 +292,13 @@ such as Claude on the web and desktop (the mobile app shows them too), render an
 interactive panel in the chat for some tools. Other clients ignore the panels
 and get the same text results as before; no tool depends on a panel.
 
+In Claude, panels render in regular chats only. Claude Code and agent-mode
+sessions (Claude with its own file and shell tools) call the same connector's
+tools as text, list none of its resources and may not offer
+`upload_from_computer`; agents there publish local files with `begin_upload`.
+This is the host's choice, not something the server negotiates: nothing here
+depends on client capabilities.
+
 Each linked tool carries `_meta.ui.resourceUri` (and the deprecated flat
 `ui/resourceUri` key that some hosts still read). The panel is a `resources/read`
 of that `ui://` URI, MIME type `text/html;profile=mcp-app`.
