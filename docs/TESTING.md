@@ -29,8 +29,12 @@ to a missing file.
 issue (`Fixes #N`/`Refs #N`), has a well-formed message and GitHub noreply emails,
 and changes docs whenever it changes code, deployment, scripts or CI (or says
 `Docs: unchanged, <reason>`). With `--verify-issues` it also asks GitHub that each
-issue exists and fills a form's required fields. The `commit-msg` and `pre-push`
-hooks in `.githooks/` run it locally; `--self-test` covers its rules.
+issue exists and fills a form's required fields. It needs `gh` with REST access
+only: the repository comes from `GITHUB_REPOSITORY` or from
+`gh api 'repos/{owner}/{repo}'` (not `gh repo view`, which needs GraphQL). The
+`commit-msg` and `pre-push` hooks in `.githooks/` run it locally; `--self-test`
+covers its rules, including the repository lookup against a fake `gh` that
+refuses anything but that REST call.
 
 Go tests cover safe publication, policies/credentials, replay/recovery,
 tar/ZIP layout (flat, one wrapper, `./` prefix) and traversal/type/CRC/limits,

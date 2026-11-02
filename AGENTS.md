@@ -229,9 +229,12 @@ never change git state or the shared live stack. The lead rereads the combined
 diff and reruns every check before committing.
 
 **When the environment blocks a step.** Never skip or weaken a failing check.
-- No `gh` CLI, so the `pre-push` hook cannot verify issues: confirm through the
-  GitHub API or MCP tools that each referenced issue exists and fills its form,
-  run `python3 scripts/check_commits.py -- origin/main..HEAD`, then push with
+- `pre-push` cannot verify issues: it needs `gh` with REST access only
+  (`gh api` works even where GraphQL is refused), so first check that
+  `gh api 'repos/{owner}/{repo}'` answers. Only when `gh` is missing or cannot
+  reach the REST API: confirm through the GitHub API or MCP tools that each
+  referenced issue exists and fills its form, run
+  `python3 scripts/check_commits.py -- origin/main..HEAD`, then push with
   `git -c core.hooksPath=/dev/null push`. CI repeats the full check.
 - Tag pushes refused: release with a manual run of the Release workflow (step 5
   of the Git section). If dispatching is refused too, ask the owner to start it

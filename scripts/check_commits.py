@@ -19,9 +19,10 @@ REVS are `git log` revisions, e.g. `origin/main..HEAD`. A commit passes when:
   line: `Docs: unchanged, <reason>`.
 Merge commits and GitHub bot commits (Dependabot) are exempt.
 
---verify-issues also asks GitHub (via `gh`) that each referenced number is an
-issue, not a pull request, and that it fills every required field of one of the
-.github/ISSUE_TEMPLATE forms. Stdlib only; exit status 1 on any failure.
+--verify-issues also asks GitHub (via `gh api`, REST only) that each referenced
+number is an issue, not a pull request, and that it fills every required field
+of one of the .github/ISSUE_TEMPLATE forms. Stdlib only; exit status 1 on any
+failure.
 """
 
 import argparse
@@ -136,15 +137,26 @@ def issue_body_problems(body, forms):
     return [f"issue does not follow a template; closest is {name}, missing: " + ", ".join(gaps)]
 
 
+def repo_from_gh():
+    """OWNER/REPO of the checkout, from gh's view of the git remote.
+
+    REST only (gh fills {owner}/{repo} from the remote), the same API as the
+    issue lookups: `gh repo view` needs GraphQL, which some tokens and
+    environments do not allow."""
+    result = subprocess.run(["gh", "api", "repos/{owner}/{repo}", "--jq", ".full_name"],
+                            cwd=ROOT, capture_output=True, text=True)
+    repo = result.stdout.strip()
+    if result.returncode != 0 or not re.fullmatch(r"[\w.-]+/[\w.-]+", repo):
+        why = (result.stderr.strip().splitlines() or ["no repository in the answer"])[-1][:200]
+        sys.exit(f"check_commits: could not determine the GitHub repository with gh api: {why}")
+    return repo
+
+
 class GitHub:
     def __init__(self):
         if not shutil.which("gh"):
             sys.exit("check_commits: --verify-issues needs the GitHub CLI: brew install gh, then gh auth login")
-        self.repo = os.environ.get("GITHUB_REPOSITORY") or subprocess.run(
-            ["gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"],
-            cwd=ROOT, capture_output=True, text=True).stdout.strip()
-        if not self.repo:
-            sys.exit("check_commits: could not determine the GitHub repository (is gh authenticated?)")
+        self.repo = os.environ.get("GITHUB_REPOSITORY") or repo_from_gh()
         self.forms, self.cache = templates(), {}
 
     def problems(self, number):
@@ -212,6 +224,41 @@ def check_revisions(revs, verify):
     return 1 if failed else 0
 
 
+def gh_lookup_self_test():
+    """repo_from_gh against a fake gh that answers only the REST repository
+    lookup and refuses anything else (repo view, GraphQL), and GitHub()
+    preferring GITHUB_REPOSITORY over gh."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        fake = Path(tmp) / "gh"
+        fake.write_text('#!/bin/sh\n'
+                        'if [ "$*" = "api repos/{owner}/{repo} --jq .full_name" ]; then echo Owner/name; exit 0; fi\n'
+                        'echo "refused: $1 $2" >&2; exit 1\n')
+        fake.chmod(0o755)
+        saved = {k: os.environ.get(k) for k in ("PATH", "GITHUB_REPOSITORY")}
+        try:
+            os.environ["PATH"] = tmp + os.pathsep + (saved["PATH"] or "")
+            os.environ.pop("GITHUB_REPOSITORY", None)
+            repo = repo_from_gh()
+            assert GitHub().repo == "Owner/name"
+            os.environ["GITHUB_REPOSITORY"] = "Env/repo"
+            assert GitHub().repo == "Env/repo"
+            fake.write_text('#!/bin/sh\necho "HTTP 401: Bad credentials" >&2; exit 1\n')
+            try:
+                os.environ.pop("GITHUB_REPOSITORY", None)
+                repo_from_gh()
+                raise AssertionError("a failed lookup must exit")
+            except SystemExit as e:
+                assert "HTTP 401: Bad credentials" in str(e), e
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+    return repo
+
+
 def self_test():
     good = ("Serve release URLs that carry a query string\n\n"
             "forward_auth keeps the visitor's query, so authorize returned 404.\n"
@@ -259,6 +306,7 @@ def self_test():
     assert issue_body_problems(change.replace("### Problem", "### Other"), forms)
     assert issue_body_problems(change.replace("text", "_No response_", 1), forms)
     assert "missing:" in issue_body_problems("", forms)[0]
+    assert gh_lookup_self_test() == "Owner/name"
     print("PASS: check_commits self-test")
     return 0
 
