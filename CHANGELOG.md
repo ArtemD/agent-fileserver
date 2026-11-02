@@ -10,6 +10,8 @@ Each release on GitHub also lists every commit and the issues it closed.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-02
+
 ### Added
 
 - Releases expire. New releases are deleted automatically after 60 days
@@ -99,6 +101,7 @@ Each release on GitHub also lists every commit and the issues it closed.
   passwords, per-agent keys administered from the host, and hardened
   containers.
 
-[Unreleased]: https://github.com/ArtemD/agent-fileserver/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/ArtemD/agent-fileserver/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/ArtemD/agent-fileserver/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/ArtemD/agent-fileserver/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/ArtemD/agent-fileserver/releases/tag/v0.1.0
