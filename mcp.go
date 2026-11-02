@@ -196,14 +196,26 @@ func (a *apiServer) newMCPHandler() http.Handler {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	server := mcp.NewServer(&mcp.Implementation{Name: "agent-fileserver", Version: buildVersion}, &mcp.ServerOptions{Logger: logger,
 		Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}},
-		Instructions: "Publish clean static files only. Never pass management bearer keys as tool arguments. Publish retries require the same explicit idempotency_key and bytes. Downloads are inline only, up to 1 MiB; this is not a client file-attachment guarantee. For files too large to pass inline (attachments, big sites, videos), call begin_upload and PUT the raw bytes with the returned curl command."})
+		Instructions: "Publish clean static files only. Never pass management bearer keys as tool arguments. Publish retries require the same explicit idempotency_key and bytes. Downloads are inline only, up to 1 MiB; this is not a client file-attachment guarantee. For files too large to pass inline (attachments, big sites, videos), call begin_upload and PUT the raw bytes with the returned curl command. " +
+			"Releases expire and are deleted automatically after default_expiry_days (server_info) unless expires_in_days says otherwise; every result shows expires_at and publish results carry a notice. When the user needs a link to last, pass expires_in_days (0 = never) or call set_expiry, and tell the user when a link will stop working. " +
+			"To change a published site without changing its link, publish again with token set to the existing release."})
 	str := func() map[string]any { return map[string]any{"type": "string"} }
 	token := func() map[string]any { return map[string]any{"type": "string", "pattern": "^[A-Za-z0-9_-]+$"} }
-	publish := func() map[string]any {
-		return map[string]any{"label": map[string]any{"type": "string", "maxLength": 200}, "spa": map[string]any{"type": "boolean"},
-			"password":        map[string]any{"type": "string", "description": "Optional visitor password, 8..72 UTF-8 bytes; not a management API key."},
-			"idempotency_key": map[string]any{"type": "string", "minLength": 16, "maxLength": 128, "pattern": "^[A-Za-z0-9_-]+$"}}
+	expiryDays := func(description string) map[string]any {
+		return map[string]any{"type": "integer", "minimum": 0, "maximum": maxExpiryDays, "description": description}
 	}
+	publish := func() map[string]any {
+		return map[string]any{"label": map[string]any{"type": "string", "maxLength": 200, "description": "Optional; on an update an empty label keeps the current one."}, "spa": map[string]any{"type": "boolean"},
+			"password":        map[string]any{"type": "string", "description": "Optional visitor password, 8..72 UTF-8 bytes; not a management API key. On an update it replaces the password; omitted keeps the current access (remove_password makes a release public)."},
+			"idempotency_key": map[string]any{"type": "string", "minLength": 16, "maxLength": 128, "pattern": "^[A-Za-z0-9_-]+$"},
+			"token":           map[string]any{"type": "string", "pattern": "^[A-Za-z0-9_-]{22}$", "description": "Optional: update this existing release in place. Its token and root URL /TOKEN/ stay the same, so links keep working; the new content replaces the old atomically."},
+			"expires_in_days": expiryDays(fmt.Sprintf("Optional: delete the release automatically after this many days; 0 = never. Omitted: the server default (default_expiry_days, now %d; 0 = never) for a new release; an update keeps the current expiry.", a.cfg.DefaultExpiryDays))}
+	}
+	lifecycle := " New releases never expire unless expires_in_days is set (1..3650 days)."
+	if a.cfg.DefaultExpiryDays > 0 {
+		lifecycle = fmt.Sprintf(" New releases are DELETED AUTOMATICALLY after %d days unless expires_in_days says otherwise (0 = never).", a.cfg.DefaultExpiryDays)
+	}
+	lifecycle += " The result shows expires_at and a notice. Pass token to update an existing release in place, keeping its URL."
 	add := func(name, description string, schema any, readOnly, destructive, idempotent bool) {
 		openWorld := name == "publish_files" || name == "publish_archive" || name == "remove_password" || name == "begin_upload"
 		server.AddTool(&mcp.Tool{Name: name, Description: description, InputSchema: schema,
@@ -212,8 +224,9 @@ func (a *apiServer) newMCPHandler() http.Handler {
 				return a.mcpCall(ctx, name, req.Params.Arguments), nil
 			})
 	}
-	add("server_info", "Management identity, namespace and limits.", mcpSchema(map[string]any{}), true, false, true)
-	add("list_releases", "List releases, newest first; at most the newest 1,000.", mcpSchema(map[string]any{}), true, false, true)
+	add("server_info", "Management identity, namespace, limits, default_expiry_days and current free disk space (disk: what fits right now).", mcpSchema(map[string]any{}), true, false, true)
+	add("list_releases", "List releases, newest first (at most the newest 1,000), with count, total_bytes, truncated and expiring_within_7_days over all releases. Each release shows expires_at (null = never).", mcpSchema(map[string]any{}), true, false, true)
+	add("set_expiry", "Change when a release is deleted automatically: expires_in_days from now, or 0 to keep it forever. Use it when the user needs a link to last longer (or shorter) than its current expires_at.", mcpSchema(map[string]any{"token": token(), "expires_in_days": expiryDays("Days from now until automatic deletion, 1..3650; 0 = never expire.")}, "token", "expires_in_days"), false, true, false)
 	for _, name := range []string{"release_info", "download_release", "delete_release", "reset_password", "remove_password"} {
 		description := map[string]string{
 			"release_info":     "Read release metadata and visitor access policy.",
@@ -226,17 +239,17 @@ func (a *apiServer) newMCPHandler() http.Handler {
 	add("set_password", "Replace the visitor password. Password is not a management bearer key.", mcpSchema(map[string]any{"token": token(), "password": str()}, "token", "password"), false, true, true)
 	p := publish()
 	p["archive_base64"] = map[string]any{"type": "string", "contentEncoding": "base64", "description": "Standard padded base64 ZIP, tar, or tar.gz archive; decoded limit is min(server limit, 100 MiB). JSON and base64 overhead are bounded."}
-	add("publish_archive", "Publish a static ZIP/tar/tar.gz to the PUBLIC INTERNET by default unless a visitor password is supplied. Uses the shared safe publisher. Explicit caller idempotency_key required; reuse exact arguments on retry. Formats: ZIP, tar, tar.gz (xz, zstd, bzip2, 7z, rar are refused); flat or one wrapper folder. Use tar.gz or ZIP for text sites; plain tar or zip -0 for video, images, PDFs and other already-compressed files.", mcpSchema(p, "archive_base64", "idempotency_key"), false, false, true)
+	add("publish_archive", "Publish a static ZIP/tar/tar.gz to the PUBLIC INTERNET by default unless a visitor password is supplied. Uses the shared safe publisher. Explicit caller idempotency_key required; reuse exact arguments on retry. Formats: ZIP, tar, tar.gz (xz, zstd, bzip2, 7z, rar are refused); flat or one wrapper folder. Use tar.gz or ZIP for text sites; plain tar or zip -0 for video, images, PDFs and other already-compressed files."+lifecycle, mcpSchema(p, "archive_base64", "idempotency_key"), false, true, true)
 	u := publish()
 	u["size"] = map[string]any{"type": "integer", "minimum": 1, "maximum": a.cfg.MaxUploadBytes, "description": "Exact byte length of the file (e.g. stat -c %s FILE)."}
 	u["sha256"] = map[string]any{"type": "string", "pattern": "^[0-9a-f]{64}$", "description": "Lowercase hex SHA-256 of the file (e.g. sha256sum FILE)."}
 	u["filename"] = map[string]any{"type": "string", "minLength": 1, "maxLength": 255, "description": "Publish the bytes as ONE file with this name (any type), served with its content type at /TOKEN/NAME, so browsers show HTML, PDFs, images and video inline. filename index.html publishes a one-page website at /TOKEN/. Omit for a ZIP, tar or tar.gz website archive."}
-	add("begin_upload", fmt.Sprintf("Start publishing a file too large to pass inline (up to %d MiB): returns a one-time HTTPS PUT URL and Authorization header, valid 30 minutes for one attempt. Then send the raw file from a shell, e.g. Claude's code sandbox, by running the returned command with FILE replaced by the path. The PUT response is the release, PUBLIC ON THE INTERNET unless a visitor password is supplied. Without filename the file must be a ZIP/tar/tar.gz site (flat or one wrapper folder; xz, zstd, bzip2, 7z, rar are refused; plain tar or zip -0 for already-compressed media); with filename it is one file served by its content type (filename index.html makes a one-page website at the release root). To retry, call begin_upload again with the same idempotency_key.", a.cfg.MaxUploadBytes>>20), mcpSchema(u, "size", "sha256", "idempotency_key"), false, false, false)
+	add("begin_upload", fmt.Sprintf("Start publishing a file too large to pass inline (up to %d MiB): returns a one-time HTTPS PUT URL and Authorization header, valid 30 minutes for one attempt. Then send the raw file from a shell, e.g. Claude's code sandbox, by running the returned command with FILE replaced by the path. The PUT response is the release, PUBLIC ON THE INTERNET unless a visitor password is supplied. Without filename the file must be a ZIP/tar/tar.gz site (flat or one wrapper folder; xz, zstd, bzip2, 7z, rar are refused; plain tar or zip -0 for already-compressed media); with filename it is one file served by its content type (filename index.html makes a one-page website at the release root). To retry, call begin_upload again with the same idempotency_key.", a.cfg.MaxUploadBytes>>20)+lifecycle, mcpSchema(u, "size", "sha256", "idempotency_key"), false, true, false)
 	p = publish()
 	p["files"] = map[string]any{"type": "array", "minItems": 1, "maxItems": min(a.cfg.MaxEntries, mcpMaxFiles), "items": mcpSchema(map[string]any{
 		"path": str(), "text": map[string]any{"type": "string", "description": "UTF-8 contents; specify exactly one of text or content_base64."},
 		"content_base64": map[string]any{"type": "string", "contentEncoding": "base64"}}, "path")}
-	add("publish_files", "Publish raw text/base64 files to the PUBLIC INTERNET by default unless a visitor password is supplied. Paths are relative, without dot components, links or secrets. One file publishes as a single file served with its content type at /TOKEN/NAME; a lone index.html is a one-page website at /TOKEN/. Multiple files form a website directory. Explicit idempotency_key required.", mcpSchema(p, "files", "idempotency_key"), false, false, true)
+	add("publish_files", "Publish raw text/base64 files to the PUBLIC INTERNET by default unless a visitor password is supplied. Paths are relative, without dot components, links or secrets. One file publishes as a single file served with its content type at /TOKEN/NAME; a lone index.html is a one-page website at /TOKEN/. Multiple files form a website directory. Explicit idempotency_key required."+lifecycle, mcpSchema(p, "files", "idempotency_key"), false, true, true)
 	return mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{
 		Stateless: true, JSONResponse: true, Logger: logger, MaxRequestBodyBytes: a.mcpBodyLimit(), PropagateRequestCancellation: true,
 	})
@@ -253,6 +266,8 @@ type mcpPublishArgs struct {
 	SPA            bool      `json:"spa,omitempty"`
 	Password       string    `json:"password,omitempty"`
 	IdempotencyKey string    `json:"idempotency_key"`
+	Token          string    `json:"token,omitempty"`
+	ExpiresInDays  *int      `json:"expires_in_days,omitempty"`
 	ArchiveBase64  *string   `json:"archive_base64,omitempty"`
 	Files          []mcpFile `json:"files,omitempty"`
 }
@@ -429,6 +444,17 @@ func (a *apiServer) mcpCall(ctx context.Context, name string, raw json.RawMessag
 		}
 		b, _ := json.Marshal(args)
 		return mcpAPIResult(a.mcpDispatch(ctx, parent, "POST", "/_api/v1/uploads", bytes.NewReader(b), "application/json", "", mcpOutputBytes))
+	}
+	if name == "set_expiry" {
+		var args struct {
+			Token         string `json:"token"`
+			ExpiresInDays *int   `json:"expires_in_days"`
+		}
+		if mcpDecode(raw, &args) != nil || !validToken(args.Token) || args.ExpiresInDays == nil {
+			return mcpFailure("invalid set_expiry arguments")
+		}
+		b, _ := json.Marshal(map[string]int{"expires_in_days": *args.ExpiresInDays})
+		return mcpAPIResult(a.mcpDispatch(ctx, parent, "PUT", "/_api/v1/releases/"+args.Token+"/expiry", bytes.NewReader(b), "application/json", "", mcpOutputBytes))
 	}
 	var args struct {
 		Token    string `json:"token,omitempty"`
@@ -615,7 +641,7 @@ func (a *apiServer) mcpPublish(ctx context.Context, parent *http.Request, name s
 	var head bytes.Buffer
 	mw := multipart.NewWriter(&head)
 	p, _ := mw.CreateFormField("metadata")
-	meta, _ := json.Marshal(uploadMetadata{Label: args.Label, SPA: args.SPA, Password: args.Password})
+	meta, _ := json.Marshal(uploadMetadata{Label: args.Label, SPA: args.SPA, Password: args.Password, Token: args.Token, ExpiresInDays: args.ExpiresInDays})
 	_, _ = p.Write(meta)
 	_, _ = mw.CreateFormFile("artifact", "artifact")
 	header := append([]byte(nil), head.Bytes()...)

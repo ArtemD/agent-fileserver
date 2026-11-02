@@ -12,7 +12,8 @@ own server over **remote MCP**, and get back a fresh, unguessable URL to share.
 
 - **MCP is the only management interface.** No web UI, no REST API, no upload form, no SSH publishing.
 - Publish a few files or **one ZIP/tar.gz for a whole website**, and **big files (up to 1 GiB by default)** through a one-time upload ticket that only the `begin_upload` MCP tool can mint.
-- Fresh unlisted URL per immutable release; optional visitor password.
+- Fresh unlisted URL per release; optional visitor password. Publish again with the release's `token` to update a page and keep its link.
+- Links **expire after 60 days** by default (operator setting); an agent can keep one longer with `set_expiry`.
 - List, inspect, download (≤ 1 MiB), delete, and set/reset/remove passwords.
 - Docker Compose: Caddy serves bytes; a sandboxed Go service (no network) handles MCP on a private Unix socket.
 - No database, analytics, uploaded code execution or directory listing.
@@ -131,15 +132,18 @@ Just ask your agent, for example:
 
 - *"Build a one-page prototype for X and publish it to fserver."*
 - *"Publish this PDF with password `correct-horse-42`."*
+- *"Update the demo page, same link."*
+- *"Keep the proposal online forever."*
 - *"List my fserver releases"*, *"remove the password from the proposal"*, *"delete the old demo"*.
 
 | Tool | Purpose |
 |---|---|
-| `server_info` | Identity and limits |
-| `list_releases` / `release_info` | Find and inspect releases (newest 1,000) |
+| `server_info` | Identity, limits, default expiry and free disk space |
+| `list_releases` / `release_info` | Find and inspect releases (newest 1,000, with totals and expiry) |
 | `publish_files` | A few UTF-8 or base64 files |
 | `publish_archive` | One base64 ZIP, tar or tar.gz; unpacked server-side |
 | `begin_upload` | One-time ticket and `curl` command to upload a large file or archive (up to 1 GiB by default) |
+| `set_expiry` | Change when a release is deleted automatically; `0` keeps it forever |
 | `download_release` | Inline base64 download, up to 1 MiB |
 | `delete_release` | Permanently delete a release |
 | `set_password` / `reset_password` / `remove_password` | Visitor access (username `viewer`) |
@@ -168,8 +172,21 @@ refused, the error names the offending file and reason and includes a `hint`
 with the next step for the agent ([errors](docs/MCP.md#errors)).
 
 Every publish needs an `idempotency_key`; retries reuse the same key and exact
-payload. Each publish creates a new URL — nothing is overwritten in place.
-More: [MCP reference](docs/MCP.md).
+payload. A publish creates a new URL unless it passes `token`: then the content
+of that release is replaced and its link stays the same (a single-file release
+keeps its exact URL when the file name stays the same).
+More: [MCP reference](docs/MCP.md#update-a-release-in-place).
+
+### Links expire
+
+A new release is **deleted automatically after 60 days**. The result shows
+`expires_at` and a `notice`, and the agent should tell you when the link will
+stop working. To keep a link longer, ask the agent to call `set_expiry` (days, or
+`0` for never) or to publish with `expires_in_days`. Updating a release keeps its
+expiry unless you change it. The operator sets the default with
+`FSERVER_DEFAULT_EXPIRY_DAYS` (`0` = new releases never expire). Releases
+published before this feature never expire. Details:
+[MCP reference](docs/MCP.md#expiry).
 
 ## Safety and limits
 
@@ -186,7 +203,8 @@ More: [MCP reference](docs/MCP.md).
   and corrupt archives are rejected. This is not content-based secret scanning.
 - All releases on one hostname share a browser origin: only publish JavaScript
   you trust, and never reuse company production login cookies here.
-- Deletion is permanent at the origin; it can't recall downloads or caches.
+- Deletion, including automatic deletion at expiry, is permanent at the origin;
+  it can't recall downloads or caches.
 - Upload tickets are 256-bit, single-use, expire after 30 minutes, work only on
   `PUT /_upload` and are revoked with the key that minted them. Management keys
   are refused there.
@@ -204,7 +222,8 @@ git fetch --tags && git checkout vX.Y.Z   # upgrade: read CHANGELOG.md first
 FSERVER_VERSION=$(git describe --tags --always --dirty) docker compose up -d --build --wait
 ```
 
-Upgrades keep keys, passwords and releases (they live in `./data`).
+Upgrades keep keys, passwords and releases (they live in `./data`). Existing
+releases keep no expiry; nothing is deleted on upgrade.
 
 ## Releases
 

@@ -37,11 +37,22 @@ type apiConfig struct {
 	MaxEntries      int    `json:"max_entries"`
 	MinFreeBytes    uint64 `json:"min_free_bytes"`
 	PublishLimit    int    `json:"publish_limit"`
+	// DefaultExpiryDays applies to new releases published without
+	// expires_in_days; 0 means they never expire. The serve command defaults
+	// it to 60 (FSERVER_DEFAULT_EXPIRY_DAYS).
+	DefaultExpiryDays int `json:"default_expiry_days"`
 }
+
+// maxExpiryDays bounds expires_in_days and FSERVER_DEFAULT_EXPIRY_DAYS (about ten years).
+const maxExpiryDays = 3650
+
 type releaseView struct {
 	manifest
 	Protected bool   `json:"protected"`
 	Username  string `json:"username,omitempty"`
+	// Notice is set on publish, update and set_expiry results: one sentence
+	// on when the release is deleted and how to change that.
+	Notice string `json:"notice,omitempty"`
 }
 type apiRate struct {
 	count           int
@@ -75,6 +86,11 @@ type uploadMetadata struct {
 	Label    string `json:"label"`
 	SPA      bool   `json:"spa"`
 	Password string `json:"password,omitempty"`
+	// Token replaces the content of that existing release in place.
+	Token string `json:"token,omitempty"`
+	// ExpiresInDays: nil is the server default for a new release and keeps
+	// the current expiry on an update; 0 never expires.
+	ExpiresInDays *int `json:"expires_in_days,omitempty"`
 }
 
 func newAPIServer(s *store, tokens *tokenStore, cfg apiConfig) (*apiServer, error) {
@@ -103,7 +119,7 @@ func newAPIServer(s *store, tokens *tokenStore, cfg apiConfig) (*apiServer, erro
 	if cfg.PublishLimit == 0 {
 		cfg.PublishLimit = 30
 	}
-	if cfg.MaxUploadBytes < 1 || cfg.MaxExtractBytes < 1 || cfg.MaxEntries < 1 || cfg.MaxEntries > 1000000 || cfg.PublishLimit < 1 || cfg.MaxUploadBytes > 1<<40 || cfg.MaxExtractBytes > 1<<40 {
+	if cfg.MaxUploadBytes < 1 || cfg.MaxExtractBytes < 1 || cfg.MaxEntries < 1 || cfg.MaxEntries > 1000000 || cfg.PublishLimit < 1 || cfg.MaxUploadBytes > 1<<40 || cfg.MaxExtractBytes > 1<<40 || cfg.DefaultExpiryDays < 0 || cfg.DefaultExpiryDays > maxExpiryDays {
 		return nil, fmt.Errorf("invalid API limits")
 	}
 	a := &apiServer{s: s, tokens: tokens, cfg: cfg, incoming: filepath.Join(s.root, "incoming"), state: filepath.Join(s.root, "api-state"), job: make(chan struct{}, 1), rates: map[string]apiRate{}}
@@ -426,7 +442,15 @@ func (a *apiServer) ServeHTTP(out http.ResponseWriter, r *http.Request) {
 		}
 		// "limits" applies to publish_archive/publish_files; "upload" to begin_upload.
 		mcpLimits := a.mcpLimits()
+		// disk is null if the filesystem cannot be read; the rest still helps.
+		var disk *diskReport
+		var st syscall.Statfs_t
+		if syscall.Statfs(a.incoming, &st) == nil {
+			r := diskReportFor(st, a.cfg, mcpLimits)
+			disk = &r
+		}
 		apiJSON(w, 200, map[string]any{"version": buildVersion, "namespace": a.cfg.Namespace, "agent": identity.Label,
+			"default_expiry_days": a.cfg.DefaultExpiryDays, "disk": disk,
 			"limits": map[string]any{"max_upload_bytes": mcpLimits.MaxUploadBytes, "max_extract_bytes": mcpLimits.MaxExtractBytes, "max_entries": mcpLimits.MaxEntries, "min_free_bytes": a.cfg.MinFreeBytes, "min_free_inodes": minFreeInodes, "publish_limit": a.cfg.PublishLimit, "publish_window_seconds": 3600, "request_timeout_seconds": 170},
 			"upload": map[string]any{"max_bytes": a.cfg.MaxUploadBytes, "max_extract_bytes": a.cfg.MaxExtractBytes, "max_entries": a.cfg.MaxEntries, "ticket_seconds": int(uploadTicketTTL / time.Second), "max_pending_tickets": uploadMaxPending}})
 		return
@@ -449,8 +473,18 @@ func (a *apiServer) ServeHTTP(out http.ResponseWriter, r *http.Request) {
 				apiError(w, 500, id, "could not list releases")
 				return
 			}
-			// Bound JSON serialization and MCP capture size: the list is sorted
-			// newest first, so return only the newest releases.
+			// Totals cover every active release; the views are bounded for JSON
+			// serialization and MCP capture size: newest first, so the newest.
+			var total int64
+			expiring := 0
+			soon := time.Now().Add(7 * 24 * time.Hour)
+			for _, m := range ms {
+				total += m.Bytes
+				if m.ExpiresAt != nil && m.ExpiresAt.Before(soon) {
+					expiring++
+				}
+			}
+			count := len(ms)
 			if len(ms) > mcpListMax {
 				ms = ms[:mcpListMax]
 			}
@@ -463,7 +497,8 @@ func (a *apiServer) ServeHTTP(out http.ResponseWriter, r *http.Request) {
 				}
 				views = append(views, v)
 			}
-			apiJSON(w, 200, views)
+			apiJSON(w, 200, map[string]any{"releases": views, "count": count, "total_bytes": total,
+				"truncated": count > len(views), "expiring_within_7_days": expiring})
 		case "POST":
 			operation = "publish"
 			a.upload(w, r, id, identity)
@@ -494,6 +529,8 @@ func (a *apiServer) ServeHTTP(out http.ResponseWriter, r *http.Request) {
 		allow = "PUT, DELETE"
 	case "password/reset":
 		allow = "POST"
+	case "expiry":
+		allow = "PUT"
 	default:
 		apiError(w, 404, id, "not found")
 		return
@@ -537,7 +574,136 @@ func (a *apiServer) ServeHTTP(out http.ResponseWriter, r *http.Request) {
 	case "password", "password/reset":
 		operation = "password"
 		a.password(w, r, id, m, suffix == "password/reset")
+	case "expiry":
+		operation = "expiry"
+		a.expiry(w, r, id, m)
 	}
+}
+
+// expiresAt turns expires_in_days into an expiry. nil days means the server
+// default for a new release and "keep the current expiry" for an update.
+func (a *apiServer) expiresAt(days *int, update bool, now time.Time) (at *time.Time, keep, ok bool) {
+	n := a.cfg.DefaultExpiryDays
+	if days != nil {
+		n = *days
+	} else if update {
+		return nil, true, true
+	}
+	if n < 0 || n > maxExpiryDays {
+		return nil, false, false
+	}
+	if n == 0 {
+		return nil, false, true
+	}
+	t := now.UTC().Add(time.Duration(n) * 24 * time.Hour).Truncate(time.Second)
+	return &t, false, true
+}
+
+// expiryNotice tells the agent, in the result it reads anyway, when the
+// release will be deleted and how to keep it.
+func expiryNotice(m manifest, now time.Time) string {
+	if m.ExpiresAt == nil {
+		return "This release does not expire: it stays online until delete_release. Call set_expiry with expires_in_days to have it deleted automatically."
+	}
+	days := int((m.ExpiresAt.Sub(now) + 24*time.Hour - time.Second) / (24 * time.Hour))
+	return fmt.Sprintf("This release will be deleted automatically at %s (in %d days). "+
+		"If it must stay online longer, call set_expiry with a larger expires_in_days, or 0 to keep it forever; "+
+		"tell the user when the link stops working.", m.ExpiresAt.UTC().Format(time.RFC3339), max(days, 0))
+}
+
+func (a *apiServer) expiry(w http.ResponseWriter, r *http.Request, id string, m manifest) {
+	var body struct {
+		ExpiresInDays *int `json:"expires_in_days"`
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 16384)
+	if e := decodeJSON(r.Body, &body); e != nil || body.ExpiresInDays == nil {
+		apiError(w, 400, id, "expires_in_days must be an integer from 0 to 3650")
+		return
+	}
+	at, _, ok := a.expiresAt(body.ExpiresInDays, false, time.Now())
+	if !ok {
+		apiError(w, 400, id, "expires_in_days must be an integer from 0 to 3650")
+		return
+	}
+	m, e := a.s.setExpiry(m.Token, at)
+	if e != nil {
+		apiError(w, 500, id, "could not update release expiry")
+		return
+	}
+	v, e := a.view(m)
+	if e != nil {
+		apiError(w, 500, id, "could not read release policy")
+		return
+	}
+	v.Notice = expiryNotice(m, time.Now())
+	apiJSON(w, 200, v)
+}
+
+// checkLifecycle validates the update target and expiry of a publish before
+// any bytes are processed.
+func (a *apiServer) checkLifecycle(meta uploadMetadata) (int, string) {
+	if meta.Token != "" {
+		if !validToken(meta.Token) {
+			return 400, "invalid release token"
+		}
+		if _, e := a.s.info(meta.Token); e != nil {
+			return 404, "release not found"
+		}
+	}
+	if _, _, ok := a.expiresAt(meta.ExpiresInDays, meta.Token != "", time.Now()); !ok {
+		return 400, "expires_in_days must be an integer from 0 to 3650"
+	}
+	return 0, ""
+}
+
+// diskReport is the data filesystem as the publish paths see it, so an agent
+// can tell whether an upload fits before sending it.
+type diskReport struct {
+	FreeBytes                 uint64  `json:"free_bytes"`
+	TotalBytes                uint64  `json:"total_bytes"`
+	FreeInodes                *uint64 `json:"free_inodes"`
+	ReserveBytes              uint64  `json:"reserve_bytes"`
+	AvailableBytes            uint64  `json:"available_bytes"`
+	LargestFileUploadBytes    int64   `json:"largest_file_upload_bytes"`
+	LargestArchiveUploadBytes int64   `json:"largest_archive_upload_bytes"`
+	InlinePublishOK           bool    `json:"inline_publish_ok"`
+}
+
+// diskReportFor applies the same rules as diskOK: a single-file upload needs
+// five times its size above the reserve (uploadReserve), an archive upload
+// its size plus four times max_extract_bytes, an inline MCP publish its fixed
+// worst case. Too few free inodes make every publish impossible.
+func diskReportFor(st syscall.Statfs_t, cfg, inline apiConfig) diskReport {
+	r := diskReport{ReserveBytes: cfg.MinFreeBytes}
+	if st.Bsize <= 0 {
+		return r
+	}
+	b := uint64(st.Bsize)
+	mul := func(n uint64) uint64 {
+		if n > ^uint64(0)/b {
+			return ^uint64(0)
+		}
+		return n * b
+	}
+	r.FreeBytes, r.TotalBytes = mul(st.Bavail), mul(st.Blocks)
+	if st.Files > 0 {
+		free := st.Ffree
+		r.FreeInodes = &free
+	}
+	if r.FreeBytes > cfg.MinFreeBytes {
+		r.AvailableBytes = r.FreeBytes - cfg.MinFreeBytes
+	}
+	// Single-file uploads and archives use the configured entry budget for the inode check.
+	if !apiDiskAvailable(st, cfg, 0) {
+		return r
+	}
+	limit := uint64(cfg.MaxUploadBytes)
+	r.LargestFileUploadBytes = int64(min(limit, r.AvailableBytes/5))
+	if extract := 4 * uint64(cfg.MaxExtractBytes); r.AvailableBytes > extract {
+		r.LargestArchiveUploadBytes = int64(min(limit, r.AvailableBytes-extract))
+	}
+	r.InlinePublishOK = apiDiskAvailable(st, inline, uint64(inline.MaxUploadBytes)+uint64(inline.MaxExtractBytes)*4)
+	return r
 }
 func canonicalAPIPath(r *http.Request) bool {
 	return r.URL.RawQuery == "" && !r.URL.ForceQuery && canonicalPath(r)
@@ -727,6 +893,10 @@ func (a *apiServer) upload(w http.ResponseWriter, r *http.Request, id string, id
 		apiError(w, 400, id, "invalid viewer password")
 		return
 	}
+	if status, msg := a.checkLifecycle(meta); status != 0 {
+		apiError(w, status, id, msg)
+		return
+	}
 	p, e = mr.NextRawPart()
 	if e != nil || (p.FormName() != "artifact" || p.Header.Get("Content-Transfer-Encoding") != "") {
 		apiError(w, 400, id, "artifact must be the second part")
@@ -815,6 +985,7 @@ func (a *apiServer) publishSpool(ctx context.Context, w http.ResponseWriter, id,
 			apiError(w, 500, id, "could not read release policy")
 			return
 		}
+		view.Notice = expiryNotice(current, time.Now())
 		apiJSON(w, 201, view)
 		return
 	}
@@ -823,6 +994,12 @@ func (a *apiServer) publishSpool(ctx context.Context, w http.ResponseWriter, id,
 			rw.ambiguous = true
 		}
 		apiError(w, 409, id, "previous publish outcome is ambiguous; list your uploads")
+		return
+	}
+	// The target of an update must exist before extraction (it may have been
+	// deleted since begin_upload), and the expiry must be valid.
+	if status, msg := a.checkLifecycle(meta); status != 0 {
+		apiError(w, status, id, msg)
 		return
 	}
 	if _, e = f.Seek(0, io.SeekStart); e != nil {
@@ -873,7 +1050,14 @@ func (a *apiServer) publishSpool(ctx context.Context, w http.ResponseWriter, id,
 		apiError(w, 500, id, "could not persist publish intent")
 		return
 	}
-	m, _, e := a.s.publishWithPolicyContext(ctx, source, meta.Label, meta.SPA, policy)
+	opts := releaseOptions{Label: meta.Label, SPA: meta.SPA, Policy: &policy, Replace: meta.Token}
+	// An update without a password keeps the current access policy; removing
+	// a password stays an explicit remove_password call.
+	if meta.Token != "" && meta.Password == "" {
+		opts.Policy = nil
+	}
+	opts.ExpiresAt, opts.KeepExpiry, _ = a.expiresAt(meta.ExpiresInDays, meta.Token != "", time.Now())
+	m, _, e := a.s.publishRelease(ctx, source, opts)
 	if rw, ok := w.(*apiResponse); ok && validToken(m.Token) {
 		rw.release = m.Token
 	}
@@ -885,10 +1069,15 @@ func (a *apiServer) publishSpool(ctx context.Context, w http.ResponseWriter, id,
 		return
 	}
 	record.State = "complete"
-	record.Release = releaseView{manifest: m, Protected: policy.Protected}
-	if policy.Protected {
-		record.Release.Username = "viewer"
+	record.Release, e = a.view(m)
+	if e != nil {
+		if rw, ok := w.(*apiResponse); ok {
+			rw.ambiguous = true
+		}
+		apiError(w, 500, id, "publish outcome is ambiguous; list your uploads before retrying")
+		return
 	}
+	record.Release.Notice = expiryNotice(m, time.Now())
 	if e = a.writeReplay(rp, record); e != nil {
 		if rw, ok := w.(*apiResponse); ok {
 			rw.ambiguous = true
@@ -1000,7 +1189,9 @@ func (a *apiServer) authorize(w http.ResponseWriter, r *http.Request, id string)
 		apiError(w, 404, id, "not found")
 		return
 	}
-	if _, e := a.s.info(token); e != nil {
+	// Expired releases are refused from the instant they expire, whether or
+	// not the sweeper has deleted them yet.
+	if m, e := a.s.info(token); e != nil || m.expired(time.Now()) {
 		apiError(w, 404, id, "not found")
 		return
 	}
@@ -1058,7 +1249,9 @@ func (a *apiServer) authorize(w http.ResponseWriter, r *http.Request, id string)
 
 		w.Header().Set("X-Fserver-Cache-Control", "private, no-store")
 	} else {
-		w.Header().Set("X-Fserver-Cache-Control", "public, max-age=3600")
+		// Releases can be updated in place: caches may store public bytes but
+		// must revalidate (a cheap 304 with ETag), so an update shows at once.
+		w.Header().Set("X-Fserver-Cache-Control", "public, no-cache")
 	}
 	w.WriteHeader(204)
 }
@@ -1159,4 +1352,55 @@ func (a *apiServer) rememberViewer(key [32]byte) {
 		}
 	}
 	a.viewerCache[key] = now.Add(10 * time.Minute)
+}
+
+// expirySweepInterval is how often the serve command deletes expired
+// releases. Visitors are refused at expiry regardless (authorize).
+const expirySweepInterval = 10 * time.Minute
+
+// sweepExpired deletes every release whose expires_at has passed and writes
+// one audit line per deletion, in the same shape as request audit lines.
+func (a *apiServer) sweepExpired(now time.Time) (int, error) {
+	ms, err := a.s.list()
+	if err != nil {
+		auditLine("expire", 500, "", "")
+		return 0, err
+	}
+	deleted := 0
+	var errs []error
+	for _, m := range ms {
+		if !m.expired(now) {
+			continue
+		}
+		ok, e := a.s.deleteExpired(m.Token, now)
+		switch {
+		case e != nil:
+			auditLine("expire", 500, "", m.Token)
+			errs = append(errs, e)
+		case ok:
+			auditLine("expire", 200, "", m.Token)
+			deleted++
+		}
+	}
+	return deleted, errors.Join(errs...)
+}
+
+// runExpirySweeper sweeps at start and then every interval until ctx ends.
+func (a *apiServer) runExpirySweeper(ctx context.Context, interval time.Duration) {
+	_, _ = a.sweepExpired(time.Now())
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			_, _ = a.sweepExpired(time.Now())
+		}
+	}
+}
+
+func auditLine(operation string, status int, agent, release string) {
+	b, _ := json.Marshal(map[string]any{"ambiguous": false, "operation": operation, "status": status, "duration_ms": 0, "agent": agent, "release": release, "request_id": requestID()})
+	_ = json.NewEncoder(os.Stderr).Encode(json.RawMessage(b))
 }

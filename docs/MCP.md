@@ -81,8 +81,91 @@ same publish call to protect it before activation. Visitor username is `viewer`;
 passwords are 8–72 UTF-8 bytes. This is not the management key.
 
 On a lost response, retry with the **same idempotency key and exact bytes and
-metadata**. Changed payloads conflict. An ambiguous interrupted record requires
-inspection rather than automatically publishing another copy.
+metadata** (including `token` and `expires_in_days`). Changed payloads conflict.
+An ambiguous interrupted record requires inspection rather than automatically
+publishing another copy.
+
+### Update a release in place
+
+`publish_files`, `publish_archive` and `begin_upload` take an optional `token`:
+the 22-character token of an existing release, as `list_releases` shows it. The
+new content replaces the old, and the release keeps its token and root URL
+`/TOKEN/`, so shared links keep working.
+
+```json
+{
+  "idempotency_key": "example-update-0001",
+  "token": "RELEASE_TOKEN",
+  "files": [{"path": "index.html", "text": "<h1>Hello again</h1>"}]
+}
+```
+
+What is kept and what is replaced:
+
+| Property | On update |
+|---|---|
+| Token and `/TOKEN/` URL | Kept |
+| Files | Replaced as a whole. Files missing from the new content are gone |
+| `created_at` | Kept. `updated_at` is set to the time of the update |
+| `label` | Replaced when given; an empty or omitted label keeps the current one |
+| Access policy | Omitted `password` keeps the current policy, public or protected. A `password` sets a new visitor password. Only `remove_password` makes a protected release public |
+| `expires_at` | Omitted `expires_in_days` keeps the current expiry; a value sets a new one (see [Expiry](#expiry)) |
+| `spa` | Applies to the new content; the default is `false`, so repeat `"spa": true` |
+
+A single-file release is served at `/TOKEN/NAME`, so the `url` includes the file
+name. Publish the same file name to keep the exact URL; the `url` in the result
+says where the content is now. The root `/TOKEN/` URL always stays valid for a
+site or a one-page `index.html`.
+
+The swap is atomic where the filesystem allows it: visitors see the old tree or
+the new tree, never a mix. On a filesystem without that support the release
+returns 404 for under a millisecond during the swap. A new password is stored
+before the swap, so the new content is never briefly public.
+
+Because they can replace content, these three tools are annotated as
+destructive (`destructiveHint`), so a client may ask before it runs them.
+
+An unknown or deleted token returns `release not found` (404), and a malformed
+one `invalid release token` (400). Both are checked before any bytes are
+processed, so a wrong token costs nothing. `begin_upload` checks the token when
+it mints the ticket, and the `PUT` checks it again.
+
+## Expiry
+
+Releases are deleted automatically. `publish_files`, `publish_archive` and
+`begin_upload` take an optional `expires_in_days`, an integer from 0 to 3650:
+
+- Omitted on a new release: the server default, `default_expiry_days` in
+  `server_info`. It is 60 unless the operator changed
+  `FSERVER_DEFAULT_EXPIRY_DAYS` (see [installation](INSTALL.md)).
+- `0`: the release never expires.
+- `1` to `3650`: deleted that many days from now.
+- Omitted on an update: the current `expires_at` is kept.
+
+Every release view (`list_releases`, `release_info`, publish results) has
+`expires_at`, an RFC 3339 UTC time, or `null` for never. After an in-place update
+it also has `updated_at`. Publish, update, replay and `set_expiry` results carry
+a `notice`: one sentence that says when the release will be deleted and that
+`set_expiry` changes it (`0` keeps it forever). Tell the user when the link will
+stop working. The MCP server instructions and the publish tool descriptions say
+the same.
+
+```json
+{"token": "…", "url": "https://files.example.com/…/", "expires_at": "2026-12-31T12:00:00Z",
+ "notice": "This release will be deleted automatically at 2026-12-31T12:00:00Z (in 60 days). If it must stay online longer, call set_expiry …"}
+```
+
+Enforcement:
+
+- From the instant of `expires_at` the release answers 404 to visitors, even if
+  it has not been deleted yet. Expiry fails closed.
+- A sweeper in the service deletes expired releases at start and every 10
+  minutes. A deletion is permanent, exactly like `delete_release`, and is written
+  to the service log as an `expire` audit line.
+- A `set_expiry` or an update that arrives first wins: the sweeper re-checks
+  under the publisher lock before it deletes.
+- Releases published before expiry existed have no `expires_at` and never
+  expire. Upgrading deletes nothing.
 
 ## Large uploads
 
@@ -101,6 +184,8 @@ sends the raw bytes with a single `PUT`.
 | `label` | string, optional | At most 200 characters |
 | `spa` | boolean, optional | Archives only; not allowed with `filename` |
 | `password` | string, optional | Visitor password, 8–72 UTF-8 bytes; the release is public without it |
+| `token` | string, optional | Update this existing release in place instead of creating one; see [Update a release in place](#update-a-release-in-place). Checked when the ticket is minted and again at the `PUT` |
+| `expires_in_days` | integer, optional | 0 to 3650; 0 = never expire. Omitted: the server default for a new release, the current expiry for an update; see [Expiry](#expiry) |
 
 Result:
 
@@ -119,7 +204,7 @@ Result:
 `FILE` in `command` is a literal placeholder: replace it with the local path and
 run the command. The response of the `PUT` is the published release, in the
 same shape `publish_archive` returns (`token`, `url`, `files`, `bytes`,
-`protected`, …). The tool is not read-only and not idempotent by itself.
+`protected`, `expires_at`, `notice`, …). The tool is not read-only and not idempotent by itself.
 
 Typical flow in Claude.ai, Claude Desktop or Cowork: the user attaches a file
 (it appears in the code sandbox, for example under `/mnt/user-data/uploads/`),
@@ -153,11 +238,11 @@ completes; check `list_releases` or retry with the same idempotency key.
 
 | Status | When |
 |---|---|
-| 201 | Published; the body is the release JSON |
+| 201 | Published or updated; the body is the release JSON |
 | 400 | Body shorter than declared, SHA-256 mismatch, `unsafe archive entry`, `unsupported archive format` or `malformed archive` (see Errors), or `Content-Length` differs from the declared size |
 | 401 | Ticket missing, unknown, used, expired or revoked, or a management key was sent (`WWW-Authenticate: Bearer`) |
 | 403 | Cross-origin `Origin` |
-| 404 | Another path, or a query string |
+| 404 | Another path, a query string, or an update whose `token` release no longer exists (`release not found`) |
 | 405 | Method other than `PUT` |
 | 409 | Idempotency key reused with different bytes or metadata, or the earlier outcome is ambiguous |
 | 413 | `Content-Length` larger than declared, or archive limits (size, extracted size, entries) exceeded |
@@ -214,6 +299,18 @@ Errors about a specific file also carry `entry` (the file) and `reason` (why):
 
 - `invalid files`: a bad item in `publish_files`; `entry` is its `path`.
 
+Lifecycle errors, none of which changes anything:
+
+- `invalid release token` (400): `token` is not the 22-character token of a
+  release. Leave it out to publish a new release.
+- `release not found` (404): no active release has this token, because it was
+  deleted or expired. Publish again without `token`.
+- `expires_in_days must be an integer from 0 to 3650` (400): on a publish,
+  `begin_upload` or `set_expiry`. Use `0` for never.
+- `invalid set_expiry arguments`: `set_expiry` takes exactly `token` and
+  `expires_in_days`.
+- `could not update release expiry` (500): retry once, then check `release_info`.
+
 Nothing is published when a publish fails for one of these reasons, so fix the
 named entry and retry with the same `idempotency_key`.
 
@@ -221,16 +318,60 @@ named entry and retry with the same `idempotency_key`.
 
 | Tool | Arguments |
 |---|---|
-| `server_info` | `{}`; includes `version` (the build version, such as a release tag, or `dev` for an unstamped build) and an `upload` object: `max_bytes`, `max_extract_bytes`, `max_entries`, `ticket_seconds`, `max_pending_tickets` |
-| `list_releases` | `{}` |
+| `server_info` | `{}`; includes `version` (the build version, such as a release tag, or `dev` for an unstamped build), `default_expiry_days`, a `disk` object (below) and an `upload` object: `max_bytes`, `max_extract_bytes`, `max_entries`, `ticket_seconds`, `max_pending_tickets` |
+| `list_releases` | `{}`; returns an object with `releases` and totals (below) |
 | `release_info` | `{"token":"RELEASE_TOKEN"}` |
 | `download_release` | `{"token":"RELEASE_TOKEN"}` |
 | `delete_release` | `{"token":"RELEASE_TOKEN"}` |
 | `set_password` | `{"token":"RELEASE_TOKEN","password":"NEW_VISITOR_PASSWORD"}` |
 | `reset_password` | `{"token":"RELEASE_TOKEN"}` |
 | `remove_password` | `{"token":"RELEASE_TOKEN"}` |
+| `set_expiry` | `{"token":"RELEASE_TOKEN","expires_in_days":90}`; both required. 1 to 3650 sets the deletion time that many days from now, `0` keeps the release forever |
 
 `begin_upload` is described under [Large uploads](#large-uploads).
+
+`set_expiry` returns the release view with the new `expires_at` and a `notice`.
+It replaces the previous expiry, so it can also shorten one. It does not change
+the content. See [Expiry](#expiry).
+
+### list_releases result
+
+```json
+{
+  "releases": [{"token": "…", "url": "…", "expires_at": "2026-12-31T12:00:00Z", "…": "…"}],
+  "count": 42,
+  "total_bytes": 1234567,
+  "truncated": false,
+  "expiring_within_7_days": 3
+}
+```
+
+`releases` holds the newest 1,000 releases, newest first. The other fields cover
+**all** active releases: `count` is how many there are, `total_bytes` the sum of
+their published bytes (not counting the server's compressed copies),
+`truncated` is true when `count` is larger than the list, and
+`expiring_within_7_days` counts those whose `expires_at` falls within 7 days,
+including any already expired and not yet swept. Before this shape the tool
+returned a bare array; clients must read `.releases`.
+
+### server_info disk
+
+`disk` tells an agent whether an upload fits before it sends the bytes. It is
+`null` if the server cannot read its filesystem right now. All
+sizes are bytes.
+
+| Field | Meaning |
+|---|---|
+| `free_bytes`, `total_bytes` | Free and total space on the data filesystem |
+| `free_inodes` | Free inodes, or `null` when the filesystem has no fixed inode budget |
+| `reserve_bytes` | Space the server keeps free (`min_free_bytes`, 2 GiB by default) |
+| `available_bytes` | Free space above the reserve |
+| `largest_file_upload_bytes` | Largest single file `begin_upload` with `filename` can take now: it needs five times its size above the reserve, capped at the upload maximum |
+| `largest_archive_upload_bytes` | Largest archive `begin_upload` can take now: its size plus four times `max_extract_bytes` above the reserve, capped at the upload maximum |
+| `inline_publish_ok` | Whether the worst case of `publish_files` and `publish_archive` fits |
+
+The `largest_*` fields are 0 and `inline_publish_ok` is false when the free
+inodes are below the reserve, because then no publish can succeed.
 
 Reset returns a new secret visitor password; don't put it in public messages or
 logs. Remove-password makes a release public. Delete is permanent at the origin.
@@ -238,7 +379,7 @@ Confirm the selected release before destructive operations.
 
 Downloads are inline only: at most 1 MiB of base64. Larger releases are refused
 with an error, because there is no other management interface; keep your own copy
-of large artifacts. `list_releases` returns the newest 1,000 releases. Captured
+of large artifacts. `list_releases` lists the newest 1,000 releases. Captured
 output is bounded to 2 MiB (the MCP result envelope adds overhead).
 
 ## Limits and real-client testing

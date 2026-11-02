@@ -594,19 +594,38 @@ func (s *store) deleteRelease(token string) (manifest, error) {
 	if err != nil {
 		return m, err
 	}
+	return m, s.deleteLocked(token)
+}
+
+// deleteExpired deletes the release only if it is still expired under the
+// lock, so a set_expiry or update that raced the sweeper wins.
+func (s *store) deleteExpired(token string, now time.Time) (bool, error) {
+	unlock, err := s.lock()
+	if err != nil {
+		return false, err
+	}
+	defer unlock()
+	m, err := s.activeManifest(token)
+	if err != nil || !m.expired(now) {
+		return false, err
+	}
+	return true, s.deleteLocked(token)
+}
+
+func (s *store) deleteLocked(token string) error {
 	container, err := os.MkdirTemp(s.staging, "delete-"+token+"-")
 	if err != nil {
-		return m, err
+		return err
 	}
 	source := filepath.Join(s.public, token)
 	target := filepath.Join(container, "release")
 	if err = os.Chmod(source, 0755); err != nil {
 		_ = os.Remove(container)
-		return m, err
+		return err
 	}
 	if err = os.Rename(source, target); err != nil {
 		_ = os.Remove(container)
-		return m, errors.Join(err, os.Chmod(source, 0555))
+		return errors.Join(err, os.Chmod(source, 0555))
 	}
 	treeErr := removePrivateTree(container)
 	manifestErr := os.Remove(filepath.Join(s.manifests, token+".json"))
@@ -616,7 +635,7 @@ func (s *store) deleteRelease(token string) (manifest, error) {
 	if errors.Is(policyErr, fs.ErrNotExist) {
 		policyErr = nil
 	}
-	return m, errors.Join(treeErr, manifestErr, policyErr)
+	return errors.Join(treeErr, manifestErr, policyErr)
 }
 func removePrivateTree(path string) error {
 	if err := filepath.WalkDir(path, func(p string, d fs.DirEntry, err error) error {

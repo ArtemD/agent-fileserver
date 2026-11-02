@@ -163,7 +163,7 @@ class Acceptance(unittest.TestCase):
                 status, headers, body, _ = self.request(self.path + "index.html" + query)
                 self.assertEqual(status, 200)
                 self.assertIn(b"Static server works", body)
-                self.assertEqual(headers["cache-control"], "public, max-age=3600")
+                self.assertEqual(headers["cache-control"], "public, no-cache")
                 self.assertEqual(self.request(self.path + query)[0], 200)
                 self.assertEqual(self.request(self.spa_path + "client/route" + query)[0], 200)
                 status, headers, body, _ = self.request(
@@ -203,7 +203,7 @@ class Acceptance(unittest.TestCase):
 
     def test_etag_304_and_caching(self):
         _, headers, _, _ = self.request(self.path + "app.js")
-        self.assertEqual(headers["cache-control"], "public, max-age=3600")
+        self.assertEqual(headers["cache-control"], "public, no-cache")
         etag = headers["etag"]
         status, _, body, _ = self.request(
             self.path + "app.js", "-H", "If-None-Match: " + etag)

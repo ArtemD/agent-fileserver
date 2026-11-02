@@ -89,7 +89,7 @@ func TestMCPInitializeDiscoveryAndAnnotations(t *testing.T) {
 			} `json:"tools"`
 		} `json:"result"`
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &list); err != nil || w.Code != 200 || len(list.Result.Tools) != 11 {
+	if err := json.Unmarshal(w.Body.Bytes(), &list); err != nil || w.Code != 200 || len(list.Result.Tools) != 12 {
 		t.Fatalf("tools: %d %s (%v)", w.Code, w.Body, err)
 	}
 	for _, tool := range list.Result.Tools {
@@ -138,7 +138,7 @@ func TestMCPOfficialSDKClientAndRevocation(t *testing.T) {
 	}
 	defer session.Close()
 	tools, err := session.ListTools(ctx, nil)
-	if err != nil || len(tools.Tools) != 11 {
+	if err != nil || len(tools.Tools) != 12 {
 		t.Fatalf("SDK ListTools: %v", err)
 	}
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "server_info", Arguments: map[string]any{}})

@@ -15,11 +15,17 @@ Upload tickets (begin_upload, then PUT /_upload) are exercised with small files;
 the ticket travels only in a private header file, never in argv.
 Flat tar.gz sites (also with ./ prefixes) publish through MCP and upload tickets,
 and refused archives return typed errors with entry/reason/hint (issue #11).
+Release lifecycle (issues #19-#22): default and explicit expiry with set_expiry,
+update in place with token, the disk block in server_info, the list_releases
+totals object and the public Cache-Control. Real expiry deletion is covered by
+Go tests, not here. FSERVER_TEST_DEFAULT_EXPIRY_DAYS (default 60, the compose
+default) is the default_expiry_days this stack is expected to report.
 Set FSERVER_TEST_LARGE=1 for an additional exact-100-MiB decoded archive check
 and a 256 MiB single-file upload/download round trip.
 """
 
 import base64
+from datetime import datetime, timedelta, timezone
 import hashlib
 import io
 import json
@@ -42,6 +48,7 @@ import zlib
 
 BASE = os.environ.get("FSERVER_TEST_BASE", "http://localhost:8000").rstrip("/")
 RESOLVE = os.environ.get("FSERVER_TEST_RESOLVE")
+EXPECT_EXPIRY_DAYS = int(os.environ.get("FSERVER_TEST_DEFAULT_EXPIRY_DAYS", "60"))
 CLI = shlex.split(os.environ.get("FSERVER_TEST_ADMIN", "docker compose run --rm -T admin"))
 TOKEN = re.compile(r"[A-Za-z0-9_-]{22}\Z")
 KEY = re.compile(r"[A-Za-z0-9_-]{43}\Z")
@@ -146,8 +153,8 @@ class MCPLive(unittest.TestCase):
                 # Recover only OUR exact labels after any ambiguous tool result.
                 try:
                     items = cls.tool("list_releases", {})
-                    if isinstance(items, list):
-                        for item in items:
+                    if isinstance(items, dict) and isinstance(items.get("releases"), list):
+                        for item in items["releases"]:
                             if (isinstance(item, dict)
                                     and item.get("label") in cls.release_labels
                                     and TOKEN.fullmatch(item.get("token", ""))):
@@ -315,6 +322,19 @@ class MCPLive(unittest.TestCase):
         check(status == 200 and sha256(data) == sha256(expected),
               "published asset status/content hash mismatch")
 
+    # publish_limit is 30 publishes per key per hour and the whole suite
+    # publishes more, so the lifecycle tests (24 and up) use their own key.
+    # Keys manage the whole installation, so cleanup works with either.
+    def setUp(self):
+        number = self._testMethodName.split("_")[1]
+        if number.isdigit() and int(number) >= 24:
+            cls = type(self)
+            if not getattr(cls, "lifecycle_key", None):
+                cls.lifecycle_key = cls.create_key(cls.tag + "-lifecycle")
+            main = cls.key
+            cls.key = cls.lifecycle_key
+            self.addCleanup(setattr, cls, "key", main)
+
     def test_01_initialize_and_initialized(self):
         result = self.rpc("initialize", {
             "protocolVersion": "2025-06-18", "capabilities": {},
@@ -329,11 +349,28 @@ class MCPLive(unittest.TestCase):
         tools = {tool["name"]: tool for tool in result.get("tools", [])}
         expected = {"server_info", "list_releases", "release_info", "publish_files",
                     "publish_archive", "download_release", "delete_release",
-                    "set_password", "reset_password", "remove_password", "begin_upload"}
+                    "set_password", "reset_password", "remove_password", "begin_upload",
+                    "set_expiry"}
         check(expected <= tools.keys(), "required MCP tools missing")
         for name in ("publish_files", "publish_archive", "remove_password", "begin_upload"):
             check(tools[name].get("annotations", {}).get("openWorldHint") is True,
                   "public side-effect annotation missing")
+        # Publishing can replace a release's content (token), so it is destructive.
+        for name in ("publish_files", "publish_archive", "begin_upload"):
+            annotations = tools[name].get("annotations", {})
+            check(annotations.get("destructiveHint") is True
+                  and annotations.get("readOnlyHint") is not True,
+                  "publish tool is not annotated destructive (it can replace content)")
+            properties = tools[name].get("inputSchema", {}).get("properties", {})
+            check("token" in properties and "expires_in_days" in properties,
+                  "publish tool lacks token or expires_in_days arguments: " + name)
+        annotations = tools["set_expiry"].get("annotations", {})
+        check(annotations.get("destructiveHint") is True
+              and annotations.get("readOnlyHint") is not True
+              and annotations.get("openWorldHint") is not True,
+              "set_expiry annotations mismatch (destructive, not read-only, not open-world)")
+        check(set(tools["set_expiry"].get("inputSchema", {}).get("required", []))
+              == {"token", "expires_in_days"}, "set_expiry required arguments mismatch")
         me = self.tool("server_info", {})
         check(me.get("agent") == self.tag and me.get("namespace"),
               "authenticated MCP identity mismatch")
@@ -381,8 +418,9 @@ class MCPLive(unittest.TestCase):
         view = self.publish()
         info = self.tool("release_info", {"token": view["token"]})
         items = self.tool("list_releases", {})
-        check(info.get("token") == view["token"] and isinstance(items, list)
-              and any(item.get("token") == view["token"] for item in items),
+        check(info.get("token") == view["token"] and isinstance(items, dict)
+              and isinstance(items.get("releases"), list)
+              and any(item.get("token") == view["token"] for item in items["releases"]),
               "MCP list/info mismatch")
 
     def test_07_download_base64_original_hash(self):
@@ -481,11 +519,12 @@ class MCPLive(unittest.TestCase):
                 check(status in (404, 405), "non-MCP management route is reachable: " + path)
 
     @classmethod
-    def begin_upload(cls, size, digest, *, filename=None, label=None, idempotency_key=None):
+    def begin_upload(cls, size, digest, *, filename=None, label=None, idempotency_key=None,
+                     **extra):
         label = label or cls.tag + "-upload-" + secrets.token_hex(4)
         cls.release_labels.add(label)
         args = {"size": size, "sha256": digest, "label": label,
-                "idempotency_key": idempotency_key or secrets.token_urlsafe(24)}
+                "idempotency_key": idempotency_key or secrets.token_urlsafe(24), **extra}
         if filename is not None:
             args["filename"] = filename
         ticket = cls.tool("begin_upload", args)
@@ -703,6 +742,283 @@ class MCPLive(unittest.TestCase):
                   "single index.html is not served inline as HTML: /" + relative)
         self.tool("delete_release", {"token": view["token"]})
         self.releases.discard(view["token"])
+
+    @classmethod
+    def site_args(cls, **extra):
+        """Arguments for a two-file publish_files call with a tracked, unique label."""
+        label = cls.tag + "-" + secrets.token_hex(6)
+        cls.release_labels.add(label)
+        return {"label": label, "idempotency_key": secrets.token_urlsafe(24),
+                "files": [{"path": "index.html", "text": HTML.decode()},
+                          {"path": "assets/style.css", "text": CSS.decode()}], **extra}
+
+    @staticmethod
+    def parse_time(value, stage):
+        """RFC 3339 UTC timestamp (Go may print any number of fraction digits)."""
+        match = (re.fullmatch(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.\d+)?(Z|[+-]\d\d:\d\d)", value)
+                 if isinstance(value, str) else None)
+        check(match, stage + ": timestamp missing or malformed")
+        zone = "+00:00" if match.group(2) == "Z" else match.group(2)
+        return datetime.fromisoformat(match.group(1) + zone)
+
+    def check_expiry(self, view, days, stage):
+        """expires_at is always present: null for never, else about `days` days ahead."""
+        check("expires_at" in view, stage + ": expires_at missing")
+        if days == 0:
+            check(view["expires_at"] is None, stage + ": expected a release that never expires")
+            return
+        expected = datetime.now(timezone.utc) + timedelta(days=days)
+        actual = self.parse_time(view["expires_at"], stage)
+        check(abs(actual - expected) < timedelta(hours=6),
+              stage + ": expires_at is not about %d days ahead" % days)
+
+    @staticmethod
+    def check_notice(view, stage):
+        notice = view.get("notice")
+        check(isinstance(notice, str) and "set_expiry" in notice,
+              stage + ": notice missing or does not mention set_expiry")
+
+    def test_24_server_info_default_expiry_and_disk(self):
+        me = self.tool("server_info", {})
+        check(me.get("default_expiry_days") == EXPECT_EXPIRY_DAYS,
+              "server_info default_expiry_days is not the expected %d" % EXPECT_EXPIRY_DAYS)
+        disk = me.get("disk")
+        ints = ("free_bytes", "total_bytes", "reserve_bytes", "available_bytes",
+                "largest_file_upload_bytes", "largest_archive_upload_bytes")
+        check(isinstance(disk, dict) and all(type(disk.get(field)) is int and disk[field] >= 0
+                                             for field in ints),
+              "server_info disk block missing or has non-integer fields")
+        check(type(disk.get("inline_publish_ok")) is bool, "disk.inline_publish_ok is not a boolean")
+        check(disk.get("free_inodes") is None
+              or (type(disk["free_inodes"]) is int and disk["free_inodes"] >= 0),
+              "disk.free_inodes is neither null nor a count")
+        check(0 < disk["total_bytes"] and disk["free_bytes"] <= disk["total_bytes"],
+              "disk free/total bytes are inconsistent")
+        check(disk["available_bytes"] <= disk["free_bytes"]
+              and disk["available_bytes"] == max(disk["free_bytes"] - disk["reserve_bytes"], 0),
+              "disk.available_bytes is not free_bytes above the reserve")
+        maximum = me["upload"]["max_bytes"]
+        check(disk["largest_file_upload_bytes"] <= maximum
+              and disk["largest_archive_upload_bytes"] <= maximum,
+              "a disk largest_* value exceeds the upload max_bytes")
+        check(disk["largest_file_upload_bytes"] <= disk["available_bytes"] // 5,
+              "disk.largest_file_upload_bytes exceeds one fifth of available_bytes")
+        check(disk["largest_archive_upload_bytes"] <= disk["available_bytes"],
+              "disk.largest_archive_upload_bytes exceeds available_bytes")
+
+    def test_25_expiry_default_explicit_and_set_expiry(self):
+        default = self.tool("server_info", {})["default_expiry_days"]
+        view = self.publish()
+        self.check_expiry(view, default, "default publish")
+        self.check_notice(view, "default publish")
+        info = self.tool("release_info", {"token": view["token"]})
+        check(info.get("expires_at") == view["expires_at"] and "notice" not in info,
+              "release_info expiry mismatch or unexpected notice")
+        # expires_in_days 0 means never; a number counts from now.
+        never = self.publish(args=self.site_args(expires_in_days=0))
+        self.check_expiry(never, 0, "expires_in_days 0")
+        self.check_notice(never, "expires_in_days 0")
+        short = self.publish(args=self.site_args(expires_in_days=5))
+        self.check_expiry(short, 5, "expires_in_days 5")
+        # set_expiry changes it and 0 removes it.
+        token = view["token"]
+        changed = self.tool("set_expiry", {"token": token, "expires_in_days": 30})
+        check(changed.get("token") == token, "set_expiry returned another release")
+        self.check_expiry(changed, 30, "set_expiry 30")
+        self.check_notice(changed, "set_expiry 30")
+        info = self.tool("release_info", {"token": token})
+        check(info.get("expires_at") == changed["expires_at"], "set_expiry was not stored")
+        removed = self.tool("set_expiry", {"token": token, "expires_in_days": 0})
+        self.check_expiry(removed, 0, "set_expiry 0")
+        self.check_notice(removed, "set_expiry 0")
+        check(self.tool("release_info", {"token": token}).get("expires_at") is None,
+              "set_expiry 0 did not remove the expiry")
+        again = self.tool("set_expiry", {"token": token, "expires_in_days": 7})
+        self.check_expiry(again, 7, "set_expiry 7")
+        # The release stays online while it has an expiry in the future.
+        self.public_bytes(token, "index.html", HTML)
+
+    def test_26_expiry_refusals_have_hints(self):
+        view = self.publish(args=self.site_args(expires_in_days=0))
+        token = view["token"]
+        message = "expires_in_days must be an integer from 0 to 3650"
+        for days in (3651, -1):
+            error = self.tool_error("set_expiry", {"token": token, "expires_in_days": days})
+            check(error["error"] == message, "set_expiry out-of-range error string mismatch")
+        check(self.tool_error("publish_files", self.site_args(expires_in_days=3651))["error"]
+              == message, "publish_files out-of-range expires_in_days error string mismatch")
+        ticket_error = self.tool_error("begin_upload", {
+            "size": 1, "sha256": "0" * 64, "label": self.tag + "-refused",
+            "idempotency_key": secrets.token_urlsafe(24), "expires_in_days": 3651})
+        check(ticket_error["error"] == message, "begin_upload out-of-range error string mismatch")
+        check(self.tool("release_info", {"token": token}).get("expires_at") is None,
+              "a refused set_expiry changed the release")
+        check(self.tool_error("set_expiry", {"token": token})["error"]
+              == "invalid set_expiry arguments", "set_expiry without days was not refused")
+        check(self.tool_error("set_expiry", {"token": "short", "expires_in_days": 1})["error"]
+              == "invalid set_expiry arguments", "set_expiry with a malformed token was not refused")
+        unknown = secrets.token_urlsafe(16)
+        check(TOKEN.fullmatch(unknown), "test token generator is broken")
+        check(self.tool_error("set_expiry", {"token": unknown, "expires_in_days": 1})["error"]
+              == "release not found", "set_expiry on an unknown release was not a 404")
+
+    def test_27_update_in_place_keeps_token_and_url(self):
+        first = self.publish()
+        token = first["token"]
+        check("updated_at" not in first, "a new release already has updated_at")
+        self.public_bytes(token, "index.html", HTML)
+        self.public_bytes(token, "assets/style.css", CSS)
+        page = b"<!doctype html><title>Updated</title><h1>Updated in place " + secrets.token_hex(4).encode() + b"</h1>"
+        key = secrets.token_urlsafe(24)
+        args = {"token": token, "idempotency_key": key,
+                "files": [{"path": "index.html", "text": page.decode()}]}
+        updated = self.publish(args=args)
+        check(updated["token"] == token and updated.get("url") == first.get("url"),
+              "update changed the token or URL")
+        check(updated.get("created_at") == first.get("created_at"), "update changed created_at")
+        self.parse_time(updated.get("updated_at"), "update")
+        check(updated.get("label") == first.get("label"), "update without label changed the label")
+        check(updated.get("files") == 1 and updated.get("bytes") == len(page),
+              "update did not report the new content")
+        check(updated.get("expires_at") == first.get("expires_at"),
+              "update without expires_in_days changed the expiry")
+        self.check_notice(updated, "update")
+        # The same URL now serves the new content; the old files are gone.
+        self.public_bytes(token, "", page)
+        self.public_bytes(token, "index.html", page)
+        check(self.request("/" + token + "/assets/style.css", anonymous=True)[0] == 404,
+              "an old file survived the update")
+        info = self.tool("release_info", {"token": token})
+        self.parse_time(info.get("updated_at"), "release_info")
+        check(info.get("created_at") == first.get("created_at"), "release_info created_at changed")
+        # Exact retry returns the same release; the same key for another release is refused.
+        replay = self.tool("publish_files", args)
+        check(replay.get("token") == token and replay.get("updated_at") == updated.get("updated_at"),
+              "update retry did not replay the first result")
+        other = self.publish()
+        error = self.tool_error("publish_files", {**args, "token": other["token"]})
+        check(error["error"] == "idempotency key was used with a different body",
+              "the same idempotency_key with another token was not refused")
+        self.public_bytes(other["token"], "index.html", HTML)
+        # expires_in_days on an update replaces the expiry; omitted keeps it.
+        args = {"token": token, "idempotency_key": secrets.token_urlsafe(24), "expires_in_days": 0,
+                "files": [{"path": "index.html", "text": page.decode()}]}
+        check(self.publish(args=args).get("expires_at") is None, "update did not remove the expiry")
+        args = {"token": token, "idempotency_key": secrets.token_urlsafe(24),
+                "files": [{"path": "index.html", "text": page.decode()}]}
+        check(self.publish(args=args).get("expires_at") is None, "update without days changed the expiry")
+
+    def test_28_update_keeps_the_access_policy(self):
+        password = secrets.token_urlsafe(24)
+        view = self.publish(password=password)
+        token = view["token"]
+        check(view.get("protected") is True, "password publish is not protected")
+        page = b"<!doctype html><title>Private update</title><h1>" + secrets.token_hex(4).encode() + b"</h1>"
+        updated = self.publish(args={"token": token, "idempotency_key": secrets.token_urlsafe(24),
+                                     "files": [{"path": "index.html", "text": page.decode()}]})
+        check(updated["token"] == token and updated.get("protected") is True,
+              "an update without a password made the release public")
+        check(self.request("/" + token + "/", anonymous=True)[0] == 401,
+              "an updated protected release is public")
+        self.public_bytes(token, "", page, password=password)
+        # A new password on an update replaces the old one.
+        replacement = secrets.token_urlsafe(24)
+        self.publish(args={"token": token, "password": replacement,
+                           "idempotency_key": secrets.token_urlsafe(24),
+                           "files": [{"path": "index.html", "text": page.decode()}]})
+        check(self.request("/" + token + "/", password=password)[0] == 401,
+              "the old visitor password survived an update with a new one")
+        self.public_bytes(token, "", page, password=replacement)
+
+    def test_29_update_errors_and_upload_ticket_update(self):
+        unknown = secrets.token_urlsafe(16)
+        files = [{"path": "index.html", "text": HTML.decode()}]
+        error = self.tool_error("publish_files", {
+            "token": unknown, "idempotency_key": secrets.token_urlsafe(24), "files": files})
+        check(error["error"] == "release not found", "update of an unknown release was not a 404")
+        error = self.tool_error("publish_files", {
+            "token": "short", "idempotency_key": secrets.token_urlsafe(24), "files": files})
+        check(error["error"] == "invalid release token", "malformed update token was not refused")
+        error = self.tool_error("begin_upload", {
+            "size": len(HTML), "sha256": hashlib.sha256(HTML).hexdigest(), "filename": "index.html",
+            "token": unknown, "label": self.tag + "-unknown", "idempotency_key": secrets.token_urlsafe(24)})
+        check(error["error"] == "release not found",
+              "begin_upload for an unknown release was not refused before minting a ticket")
+        # A ticket updates a release too: same token and URL, new bytes.
+        first = self.publish()
+        token = first["token"]
+        page = b"<!doctype html><title>Uploaded</title><h1>Uploaded update " + secrets.token_hex(4).encode() + b"</h1>"
+        path = self.write_fixture("update-index.html", page)
+        ticket = self.begin_upload(len(page), hashlib.sha256(page).hexdigest(),
+                                   filename="index.html", token=token, label=first["label"])
+        status, _, body = self.put_upload(ticket, path)
+        view = self.uploaded_release(status, body, "update through ticket")
+        check(view["token"] == token and view.get("url") == first.get("url"),
+              "ticket update changed the token or URL")
+        self.parse_time(view.get("updated_at"), "ticket update")
+        self.check_notice(view, "ticket update")
+        self.public_bytes(token, "", page)
+        check(self.request("/" + token + "/assets/style.css", anonymous=True)[0] == 404,
+              "an old file survived the ticket update")
+
+    def test_30_public_release_cache_control_revalidates(self):
+        view = self.publish()
+        token = view["token"]
+        for relative in ("", "index.html", "assets/style.css"):
+            status, headers, _ = self.request("/" + token + "/" + relative, anonymous=True)
+            check(status == 200 and headers.get("cache-control") == "public, no-cache",
+                  "public release Cache-Control is not exactly 'public, no-cache': /" + relative)
+            check(not relative or bool(headers.get("etag")),
+                  "public release lacks an ETag: /" + relative)
+        password = secrets.token_urlsafe(24)
+        protected = self.publish(password=password)
+        status, headers, _ = self.request("/" + protected["token"] + "/index.html", password=password)
+        check(status == 200 and headers.get("cache-control") == "private, no-store",
+              "protected release Cache-Control is not 'private, no-store'")
+
+    def release_totals(self):
+        result = self.tool("list_releases", {})
+        check(isinstance(result, dict) and isinstance(result.get("releases"), list),
+              "list_releases is not an object with releases")
+        for field in ("count", "total_bytes", "expiring_within_7_days"):
+            check(type(result.get(field)) is int and result[field] >= 0,
+                  "list_releases " + field + " is not a non-negative integer")
+        check(type(result.get("truncated")) is bool, "list_releases truncated is not a boolean")
+        check(result["truncated"] == (result["count"] > len(result["releases"])),
+              "list_releases truncated does not match count")
+        return result
+
+    def test_31_list_releases_totals(self):
+        before = self.release_totals()
+        view = self.publish(args=self.site_args(expires_in_days=0))
+        token = view["token"]
+        after = self.release_totals()
+        check(after["count"] == before["count"] + 1 and after["count"] >= 1,
+              "list_releases count did not grow by one release")
+        check(after["total_bytes"] - before["total_bytes"] == view["bytes"]
+              and after["total_bytes"] >= view["bytes"],
+              "list_releases total_bytes did not grow by the published bytes")
+        if after["count"] <= 1000:
+            check(after["truncated"] is False, "list_releases is truncated below 1000 releases")
+        mine = [item for item in after["releases"] if item.get("token") == token]
+        check(len(mine) == 1 and "expires_at" in mine[0] and mine[0]["expires_at"] is None
+              and "notice" not in mine[0], "list_releases entry lacks expires_at or has a notice")
+        check(after["expiring_within_7_days"] == before["expiring_within_7_days"],
+              "a never-expiring release counts as expiring")
+        # Within 7 days counts; further out does not; 0 does not.
+        self.tool("set_expiry", {"token": token, "expires_in_days": 3})
+        soon = self.release_totals()
+        check(soon["expiring_within_7_days"] == after["expiring_within_7_days"] + 1,
+              "a release expiring in 3 days is not counted in expiring_within_7_days")
+        self.tool("set_expiry", {"token": token, "expires_in_days": 30})
+        later = self.release_totals()
+        check(later["expiring_within_7_days"] == after["expiring_within_7_days"],
+              "a release expiring in 30 days is counted in expiring_within_7_days")
+        self.tool("delete_release", {"token": token})
+        self.releases.discard(token)
+        gone = self.release_totals()
+        check(gone["count"] == before["count"] and gone["total_bytes"] == before["total_bytes"],
+              "list_releases totals did not return to the start after the delete")
 
     @unittest.skipUnless(os.environ.get("FSERVER_TEST_LARGE") == "1",
                          "set FSERVER_TEST_LARGE=1 for the 256 MiB upload")

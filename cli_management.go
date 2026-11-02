@@ -31,6 +31,23 @@ func envPositive(name string) (int64, error) {
 	return n, nil
 }
 
+// defaultExpiryDays is the release expiry when FSERVER_DEFAULT_EXPIRY_DAYS is unset.
+const defaultExpiryDays = 60
+
+// envExpiryDays reads the default release expiry: unset is 60 days, 0 means
+// new releases never expire by default.
+func envExpiryDays(name string) (int, error) {
+	raw := os.Getenv(name)
+	if raw == "" {
+		return defaultExpiryDays, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 || n > maxExpiryDays {
+		return 0, fmt.Errorf("%s must be a whole number of days from 0 (never expire) to %d", name, maxExpiryDays)
+	}
+	return n, nil
+}
+
 func defaultTokenFile() string {
 	if p := os.Getenv("FSERVER_TOKEN_FILE"); p != "" {
 		return p
@@ -152,12 +169,16 @@ func runManagement(args []string, stdout, stderr io.Writer) error {
 			return fmt.Errorf("FSERVER_MAX_ENTRIES must be at most 1000000")
 		}
 		cfg.MaxEntries = int(entries)
+		if cfg.DefaultExpiryDays, err = envExpiryDays("FSERVER_DEFAULT_EXPIRY_DAYS"); err != nil {
+			return err
+		}
 		handler, err := newAPIServer(s, t, cfg)
 		if err != nil {
 			return err
 		}
 		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 		defer stop()
+		go handler.runExpirySweeper(ctx, expirySweepInterval)
 		return serveManagement(ctx, *socket, handler)
 	}
 	return fmt.Errorf("unknown management command")

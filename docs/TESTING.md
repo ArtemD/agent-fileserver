@@ -42,6 +42,13 @@ core is unreachable as a public route, origin/body/concurrency gates,
 duplicate/case-aliased arguments, whole-envelope structural allocation bombs and
 secret-free audits. Fuzz seed/parser tests run in the default suite.
 
+`lifecycle_test.go` covers the release lifecycle: expiry (default and
+`expires_in_days`, `set_expiry`, 404 from the instant of expiry before the
+sweeper, the sweeper's re-check under the lock, legacy manifests that never expire), update in place (token and URL kept,
+content replaced, policy, label and expiry kept or replaced, the exchange swap
+and its two-rename fallback, a missing or malformed token, idempotency with
+`token`), the `disk` report in `server_info` and the `list_releases` totals.
+
 The optional large test allocates hundreds of MiB on the test machine:
 
 ```sh
@@ -69,7 +76,8 @@ key. Shared helper: `tests/mcp_fixture.py`.
   has no network and a read-only key registry, Caddy mounts only public bytes
   read-only, both are healthy and restart automatically. `FSERVER_TEST_COMPOSE`
   overrides the compose command (for example `docker compose -p NAME`).
-- `http_acceptance.py` checks static MIME, compression, caching/ranges, SPA/404,
+- `http_acceptance.py` checks static MIME, compression, caching (public
+  releases are `public, no-cache` with an ETag) and ranges, SPA/404,
   denial behaviour, that release URLs ignore query strings, and immutable
   publish/delete.
 - `mcp_live.py` exercises every tool through Caddy with both key headers,
@@ -85,6 +93,15 @@ key. Shared helper: `tests/mcp_fixture.py`.
   `FSERVER_TEST_LARGE=1` it also streams a 100 MiB archive as base64 JSON and
   checks that its download is refused (inline limit 1 MiB), and uploads a
   256 MiB single file through `begin_upload` and checks the round trip.
+  It also covers the lifecycle through Caddy: the default `expires_at` and
+  `notice`, `expires_in_days` (including 0 and out-of-range values),
+  `set_expiry`, an update in place that keeps the token and URL and shows the
+  new bytes at once, the `disk` block of `server_info`, and the new
+  `list_releases` object with its totals. Waiting for a real expiry is left to
+  the Go tests, which control the clock. These lifecycle tests (24 and up) use
+  a second fixture key, because `publish_limit` (30 publishes per key per hour)
+  is lower than the suite's total; `FSERVER_TEST_DEFAULT_EXPIRY_DAYS` (default
+  60) is the `default_expiry_days` they expect from the stack.
 - `access_logging.py` checks unsampled logs, secret redaction (including
   `X-Auth-Token` and an upload ticket in `Authorization`) and, over public
   HTTPS, that a caller cannot forge its IP via `X-Forwarded-For`. It reads `logs/access.json` with sudo (`FSERVER_TEST_LOG`).

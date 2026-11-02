@@ -429,7 +429,7 @@ func TestAPIInternalAuthorizeCanonicalAndFailClosed(t *testing.T) {
 	}
 	w := check("/"+public.Token+"/a.txt", "", "")
 	assertAPIStatus(t, w, 204)
-	if w.Header().Get("X-Fserver-Cache-Control") != "public, max-age=3600" {
+	if w.Header().Get("X-Fserver-Cache-Control") != "public, no-cache" {
 		t.Fatal(w.Header())
 	}
 	w = check("/"+protected.Token+"/b.txt", "", "")
@@ -479,7 +479,7 @@ func TestAPIInternalAuthorizeIgnoresVisitorQuery(t *testing.T) {
 	for _, q := range queries {
 		w := check(q, "/"+public.Token+"/index.html", "", "")
 		assertAPIStatus(t, w, 204)
-		if w.Header().Get("X-Fserver-Cache-Control") != "public, max-age=3600" {
+		if w.Header().Get("X-Fserver-Cache-Control") != "public, no-cache" {
 			t.Fatal(q, w.Header())
 		}
 		if token, ok := authorizedURIToken("/" + public.Token + "/index.html" + q); !ok || token != public.Token {

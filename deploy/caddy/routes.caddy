@@ -106,8 +106,8 @@ route {
 			# Default private. Only a precise, trusted public-policy answer
 			# permits shared caching; caller-supplied helper headers are gone.
 			header Cache-Control "private, no-store"
-			@publiccache header X-Fserver-Cache-Control "public, max-age=3600"
-			header @publiccache Cache-Control "public, max-age=3600"
+			@publiccache header X-Fserver-Cache-Control "public, no-cache"
+			header @publiccache Cache-Control "public, no-cache"
 			# Only explicitly opted-in releases have client-side route fallback.
 			# Never fall back for a file-like path, missing asset, or directory.
 			@spa {

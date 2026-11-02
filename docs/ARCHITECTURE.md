@@ -18,7 +18,7 @@ MCP client (Claude, Claude Code, …)
               common publisher core
        validate -> stage -> private policy -> atomic activation
                        |
-                 immutable releases
+                 frozen releases
                        |
 Visitors -> Caddy -> internal policy check -> Caddy static file bytes
 ```
@@ -56,7 +56,7 @@ No OAuth account database is needed for this single-owner Bearer-key model.
 
 ## Publication
 
-Every publish gets a new random 128-bit release identifier. Source validation,
+Every new release gets a random 128-bit identifier; an update keeps it. Source validation,
 copying, content hashing and optional gzip/Brotli compression use the shared
 publisher. A valid private access policy is persisted before public activation.
 Missing, malformed or ambiguous policy state fails closed.
@@ -71,6 +71,36 @@ standard library's tar, gzip and ZIP/deflate readers parse uploads. Other
 containers (xz, zstd, bzip2, 7z, rar, lzip, lz4) are named from their first
 bytes after tar parsing has already failed, and refused; no extra decoder or
 dependency is exposed to untrusted input.
+
+## Updates and expiry
+
+A publish with `token` replaces the content of an existing release. The new
+content is validated, copied and frozen in staging exactly like a new release,
+then swapped in under the publisher lock with `renameat2(RENAME_EXCHANGE)`, so
+visitors see the old tree or the new one and never a mix. Where the filesystem
+lacks the flag (`EINVAL`, `ENOSYS`, `EOPNOTSUPP`) it falls back to two renames,
+with a window under a millisecond in which the release answers 404. Nothing is
+served that was not frozen first. The target token is checked before any bytes
+are processed and again before extraction.
+
+Access fails safe across the swap. A new visitor password is written before the
+swap, so a crash can leave old content protected but never new content public.
+An update without a password keeps the current policy; only `remove_password`
+makes a release public. The manifest is written before the swap and restored if
+the swap fails.
+
+Releases expire (60 days by default, operator setting, 0 = never). Expiry fails
+closed at the authorization check: every release request goes through
+`/_internal/authorize`, which answers 404 from the instant of `expires_at`,
+whether or not the sweeper has run. The sweeper only reclaims space. It runs
+inside the service at start and every 10 minutes, takes the publisher lock and
+re-checks the expiry before it deletes, so a `set_expiry` or update that raced
+it wins. Each deletion writes one `expire` audit line (token and status, no
+agent, no content). Manifests without `expires_at` never expire, so an upgrade
+deletes nothing. Automatic deletion is as permanent as `delete_release`.
+
+`golang.org/x/sys` is now a direct dependency (it was already in the module
+graph) for `renameat2`. It is not exposed to untrusted input.
 
 Refusals tell the caller what to fix without leaking server state. An `entry`
 echoed back is the caller's own archive member name, cut to 256 bytes and
@@ -133,7 +163,10 @@ must never be sent as visitor credentials. Password updates invalidate cached
 authorization decisions. Already-admitted transfers may finish after a change.
 
 Public URLs are unlisted, not private. Protected responses are `private,
-no-store`; public content may be cached. Every response from the Go service (MCP
+no-store`; public content may be cached but must be revalidated
+(`public, no-cache`, with ETag, so a cheap 304 when nothing changed). Releases
+can be updated in place, and a fixed `max-age` would show stale content after an
+update. Every response from the Go service (MCP
 results, which can carry visitor passwords, and authorization errors) is
 `no-store` whatever its handler set; Caddy adds `no-store` only where nothing
 more specific was set, so each response has exactly one `Cache-Control`. Changing protection or deleting cannot
@@ -167,7 +200,7 @@ Bcrypt work and the successful-password cache are bounded. Valid API keys are
 not locked out by another caller's failed-key guesses.
 
 Private rotated JSON access logs retain unsampled origin requests and redact
-Authorization/Cookie. Operation audits include identifiers/status, never request
+Authorization/Cookie. Operation audits (including automatic `expire` deletions) include identifiers/status, never request
 bodies, raw MCP arguments, archive contents, passwords or agent credentials.
 Logs, backups and credentials are never web roots.
 

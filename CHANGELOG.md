@@ -10,6 +10,41 @@ Each release on GitHub also lists every commit and the issues it closed.
 
 ## [Unreleased]
 
+### Added
+
+- Releases expire. New releases are deleted automatically after 60 days
+  unless the agent passes `expires_in_days` (1 to 3650, or 0 for never) to
+  `publish_files`, `publish_archive` or `begin_upload`. The new `set_expiry`
+  tool changes or removes the expiry later. Every release view shows
+  `expires_at` (`null` for never), publish results carry a `notice` that says
+  when the release goes and how to keep it, and `server_info` reports
+  `default_expiry_days`. Visitors get 404 from the moment a release expires; a
+  sweeper deletes it within 10 minutes. Operators set the default with
+  `FSERVER_DEFAULT_EXPIRY_DAYS` (0 turns the default expiry off). Releases
+  published before this version have no expiry: upgrading deletes nothing
+  ([#19](https://github.com/ArtemD/agent-fileserver/issues/19)).
+- Update a release in place: pass `token` of an existing release to
+  `publish_files`, `publish_archive` or `begin_upload` and the new content
+  replaces the old atomically under the same URL. The visitor password,
+  label and expiry are kept unless the call sets new ones; `updated_at` shows
+  when ([#20](https://github.com/ArtemD/agent-fileserver/issues/20)).
+- `server_info` has a `disk` block: free and total bytes, free inodes, the
+  reserve, and the largest file and archive upload that fit right now
+  ([#21](https://github.com/ArtemD/agent-fileserver/issues/21)).
+- `list_releases` reports `count`, `total_bytes`, `truncated` and
+  `expiring_within_7_days` over all releases ([#22](https://github.com/ArtemD/agent-fileserver/issues/22)).
+
+### Changed
+
+- `list_releases` returns an object instead of an array; the releases are in
+  its `releases` field. Clients that read the array must read `.releases`
+  ([#22](https://github.com/ArtemD/agent-fileserver/issues/22)).
+- Public releases are served with `Cache-Control: public, no-cache` instead
+  of `public, max-age=3600`, so browsers and caches revalidate and show an
+  update at once ([#20](https://github.com/ArtemD/agent-fileserver/issues/20)).
+- `publish_files`, `publish_archive` and `begin_upload` are annotated as
+  destructive, because with `token` they replace content ([#20](https://github.com/ArtemD/agent-fileserver/issues/20)).
+
 ## [0.2.0] - 2026-11-01
 
 ### Added

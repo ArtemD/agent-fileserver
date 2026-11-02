@@ -31,6 +31,7 @@ cp .env.example .env    # then edit
 | `FSERVER_MAX_UPLOAD_BYTES` | Optional. Largest `begin_upload` upload, default `1073741824` (1 GiB). Also Caddy's body cap on `/_upload` |
 | `FSERVER_MAX_EXTRACT_BYTES` | Optional. Largest total unpacked size of an uploaded archive, default `1073741824` (1 GiB) |
 | `FSERVER_MAX_ENTRIES` | Optional. Most files and directories in an uploaded archive, default `50000` (ZIP is limited to 65,534 anyway) |
+| `FSERVER_DEFAULT_EXPIRY_DAYS` | Optional. Days until a new release is deleted automatically, default `60`; `0` means new releases never expire. Range 0 to 3650. An agent can override it per release with `expires_in_days` or `set_expiry`; `server_info` shows it as `default_expiry_days` |
 | `COMPOSE_FILE` | Set to `compose.yaml:compose.direct.yaml` to make direct mode the default |
 
 These three limits do not change MCP inline publishing (100 MiB, 5,000 objects).
@@ -117,11 +118,28 @@ capabilities (Caddy keeps only the one its official binary needs to start), set
 no-new-privileges, restart `unless-stopped` and have health checks. Docker logs
 rotate at 10 MB × 5 per container.
 
+## Expiry
+
+New releases are deleted automatically after `FSERVER_DEFAULT_EXPIRY_DAYS` days
+(60 unless you change it). Visitors get 404 from the moment a release expires;
+a sweeper in the `api` service deletes the files at start and every 10 minutes.
+Deletion is permanent, so keep backups if you may need an expired release. Each
+deletion is one JSON line in the service log:
+
+```sh
+docker compose logs api | grep '"operation":"expire"'
+```
+
+The line has `operation` `expire`, `status` 200 (or 500 when a deletion failed
+and will be retried), the `release` token and a `request_id`. Changing the
+setting affects only releases published afterwards; run
+`docker compose up -d --wait` to apply it.
+
 ## Logs and status
 
 ```sh
 docker compose ps                         # health of api and caddy
-docker compose logs -f api                # MCP operations audit (never secrets)
+docker compose logs -f api                # MCP operations audit and expiry deletions (never secrets)
 sudo tail -F logs/access.json             # every request, keys redacted
 ```
 
@@ -140,6 +158,15 @@ Releases are published only after the full test suite passes on the tag; each
 lists its commits and the issues they closed.
 
 Data, keys and passwords live in the data directory and survive rebuilds.
+
+**Upgrading to the release with expiry:** existing releases have no expiry and
+keep living; nothing is deleted on upgrade. Only releases published afterwards
+get the default expiry. To give an old release an expiry, an agent calls
+`set_expiry`. Two changes may need action: `list_releases` now returns an object
+(clients read `.releases`), and public releases are served with
+`Cache-Control: public, no-cache` instead of `max-age=3600`, so browsers and
+caches revalidate on each visit. Set `FSERVER_DEFAULT_EXPIRY_DAYS=0` before
+upgrading if you want new releases to stay forever as before.
 
 ## Backups and restore
 

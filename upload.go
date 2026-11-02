@@ -54,6 +54,8 @@ type beginUploadRequest struct {
 	SPA            bool   `json:"spa,omitempty"`
 	Password       string `json:"password,omitempty"`
 	IdempotencyKey string `json:"idempotency_key"`
+	Token          string `json:"token,omitempty"`
+	ExpiresInDays  *int   `json:"expires_in_days,omitempty"`
 }
 
 // uploadLimits are the extraction limits for one upload. A single file is
@@ -118,6 +120,11 @@ func (a *apiServer) beginUpload(w http.ResponseWriter, r *http.Request, id strin
 		apiError(w, 400, id, "password must be 8 to 72 UTF-8 bytes without control characters")
 		return
 	}
+	meta := uploadMetadata{Label: req.Label, SPA: req.SPA, Password: req.Password, Token: req.Token, ExpiresInDays: req.ExpiresInDays}
+	if status, msg := a.checkLifecycle(meta); status != 0 {
+		apiError(w, status, id, msg)
+		return
+	}
 	single := req.Filename != ""
 	if single && !validUploadFilename(req.Filename) {
 		apiError(w, 400, id, "filename must be a plain file name without slashes, dot prefix, secrets or server-side script extensions")
@@ -133,7 +140,7 @@ func (a *apiServer) beginUpload(w http.ResponseWriter, r *http.Request, id strin
 		return
 	}
 	t := uploadTicket{agentID: identity.ID, agentLabel: identity.Label, size: req.Size, filename: req.Filename,
-		key: req.IdempotencyKey, meta: uploadMetadata{Label: req.Label, SPA: req.SPA, Password: req.Password}}
+		key: req.IdempotencyKey, meta: meta}
 	copy(t.sha256[:], sum)
 	raw, expires, err := a.mintTicket(t, time.Now())
 	if errors.Is(err, errUploadTicketsFull) {

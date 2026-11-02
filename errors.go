@@ -46,7 +46,8 @@ const (
 	hintLimits = "Check server_info: max_upload_bytes is the archive size, max_extract_bytes the unpacked total and " +
 		"max_entries the file count for inline MCP publishes; the upload block holds the larger begin_upload limits. " +
 		"Remove unused files, split the site, or use begin_upload for content over the inline limits."
-	hintDisk = "The server is low on free disk space or inodes (server_info shows min_free_bytes and min_free_inodes). " +
+	hintDisk = "The server is low on free disk space or inodes (server_info shows the disk block: available_bytes, " +
+		"largest_file_upload_bytes and largest_archive_upload_bytes say what fits now). " +
 		"Your request is fine. Delete releases you no longer need with delete_release, or ask the server owner to free space, then retry."
 	hintTimeout = "The request ran longer than request_timeout_seconds (server_info) or the client disconnected. " +
 		"Call list_releases to check; if nothing was published, retry with the same idempotency_key and bytes, " +
@@ -72,8 +73,15 @@ var errorHints = map[string]string{
 	// Routing and authentication.
 	"not found": "The path, release or file does not exist. Check the URL or token; agents can call list_releases " +
 		"for current tokens. A deleted release cannot be restored.",
-	"release not found": "No active release has this token. Call list_releases for current tokens; " +
-		"a deleted release cannot be restored, so publish it again if you still need it.",
+	"release not found": "No active release has this token (it may have been deleted or have expired). Call list_releases for current tokens; " +
+		"a deleted release cannot be restored, so publish it again, without token, if you still need it. Nothing was changed.",
+	"invalid release token": "token must be the 22-character token of an existing release, as list_releases shows it. " +
+		"Leave token out to publish a new release. Nothing was published.",
+	"expires_in_days must be an integer from 0 to 3650": "Pass expires_in_days as a whole number of days from now: 1 to 3650 to have the release " +
+		"deleted automatically, or 0 to keep it forever. Leave it out for the server default (default_expiry_days in server_info) " +
+		"or, on an update, to keep the current expiry. Nothing was changed.",
+	"invalid set_expiry arguments":     "set_expiry takes exactly token (from list_releases) and expires_in_days (0 to 3650, 0 = never expire). Nothing was changed.",
+	"could not update release expiry":  hintServer + " Call release_info to see the current expires_at.",
 	"method not allowed":               "The HTTP method does not fit this endpoint (see the Allow header). Use the MCP tools, which choose the method for you.",
 	"origin not allowed":               "Browser requests from other websites are refused. Call this endpoint from an MCP client or curl, without an Origin header.",
 	"too many authentication failures": "Too many invalid keys or tickets from this client in the last minute. Wait 60 seconds (Retry-After) and retry once with a valid credential; do not retry in a loop.",

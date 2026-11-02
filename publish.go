@@ -18,6 +18,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // Manifests count original files and bytes, not generated compression sidecars
@@ -32,6 +34,17 @@ type manifest struct {
 	Bytes            int64     `json:"bytes"`
 	SPA              bool      `json:"spa"`
 	OriginalFilename string    `json:"original_filename,omitempty"`
+	// UpdatedAt is set when the content was replaced in place (same token).
+	UpdatedAt *time.Time `json:"updated_at,omitempty"`
+	// ExpiresAt is when the expiry sweeper deletes the release; null never.
+	// Releases from before expiry existed have no field and never expire.
+	ExpiresAt *time.Time `json:"expires_at"`
+}
+
+// expired reports whether the release is past its expiry at now. Visitors are
+// refused from that instant, before the sweeper deletes it.
+func (m manifest) expired(now time.Time) bool {
+	return m.ExpiresAt != nil && !now.Before(*m.ExpiresAt)
 }
 
 type store struct{ root, public, staging, manifests, trash, policies, baseURL string }
@@ -379,112 +392,275 @@ func (s *store) publish(source, label string, spa bool) (manifest, string, error
 	return s.publishWithPolicy(source, label, spa, policy)
 }
 func (s *store) publishWithPolicyContext(ctx context.Context, source, label string, spa bool, policy accessPolicy) (manifest, string, error) {
-	m := manifest{}
-	if err := ctx.Err(); err != nil {
-		return m, "", err
+	return s.publishRelease(ctx, source, releaseOptions{Label: label, SPA: spa, Policy: &policy})
+}
+
+// releaseOptions describe one publish. With Replace set, the content of that
+// existing release is swapped in place: its token and root URL stay the same,
+// a nil Policy keeps its access policy, an empty Label keeps its label and
+// KeepExpiry keeps its expires_at.
+type releaseOptions struct {
+	Label      string
+	SPA        bool
+	Policy     *accessPolicy
+	ExpiresAt  *time.Time
+	KeepExpiry bool
+	Replace    string
+}
+
+// stagedRelease is a validated, frozen private copy of a source, ready for the
+// single activation (or exchange) rename.
+type stagedRelease struct {
+	dir, name        string
+	single, hasIndex bool
+	files, bytes     int64
+}
+
+// url is where the release content is served under token.
+func (r *stagedRelease) url(base, token string) string {
+	u := base + "/" + token + "/"
+	// A lone index.html is a one-page site: the static server already
+	// serves it at the release root, so report that shareable URL.
+	if r.single && r.name != "index.html" {
+		u += url.PathEscape(r.name)
 	}
-	if err := policy.validate(); err != nil {
-		return m, "", err
-	}
+	return u
+}
+
+func (s *store) stageRelease(ctx context.Context, source string, spa bool) (_ *stagedRelease, err error) {
 	p, err := inspectSourceContext(ctx, source)
 	if err != nil {
-		return m, "", err
+		return nil, err
 	}
 	defer p.root.Close()
 	if spa && (p.single || !p.hasIndex) {
-		return m, "", fmt.Errorf("--spa requires a directory with a root index.html")
+		return nil, fmt.Errorf("--spa requires a directory with a root index.html")
 	}
 	stage, err := os.MkdirTemp(s.staging, "release-")
 	if err != nil {
-		return m, "", err
+		return nil, err
 	}
-	defer removeStage(stage)
+	defer func() {
+		if err != nil {
+			removeStage(stage)
+		}
+	}()
+	r := &stagedRelease{dir: stage, name: p.name, single: p.single, hasIndex: p.hasIndex}
 	for _, dir := range p.dirs {
 		if err = ctx.Err(); err != nil {
-			return m, "", err
+			return nil, err
 		}
 		if err = os.Mkdir(filepath.Join(stage, dir), 0700); err != nil {
-			return m, "", err
+			return nil, err
 		}
 	}
 	for _, file := range p.files {
 		if err = copySourceContext(ctx, p.root, file, filepath.Join(stage, file.rel)); err != nil {
-			return m, "", err
+			return nil, err
 		}
-		m.Files++
-		m.Bytes += file.info.Size()
+		r.files++
+		r.bytes += file.info.Size()
 		if file.info.Size() >= 1024 && compressible(file.rel) {
 			if err = s.compressContext(ctx, filepath.Join(stage, file.rel)); err != nil {
-				return m, "", fmt.Errorf("compress %q: %w", file.rel, err)
+				return nil, fmt.Errorf("compress %q: %w", file.rel, err)
 			}
 		}
 	}
 	if spa {
 		if err = os.WriteFile(filepath.Join(stage, ".fserver-spa"), nil, 0600); err != nil {
-			return m, "", err
+			return nil, err
 		}
 	}
 	if err = freeze(stage); err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
+func (s *store) publishRelease(ctx context.Context, source string, o releaseOptions) (manifest, string, error) {
+	m := manifest{}
+	if err := ctx.Err(); err != nil {
 		return m, "", err
 	}
+	if o.Policy == nil && o.Replace == "" {
+		return m, "", fmt.Errorf("a new release needs an access policy")
+	}
+	if o.Policy != nil {
+		if err := o.Policy.validate(); err != nil {
+			return m, "", err
+		}
+	}
+	if o.Replace != "" && !validToken(o.Replace) {
+		return m, "", fmt.Errorf("invalid token: expected exactly 22 base64url characters")
+	}
+	r, err := s.stageRelease(ctx, source, o.SPA)
+	if err != nil {
+		return m, "", err
+	}
+	// After activation the stage path is gone; after an exchange it holds the
+	// previous content. Either way it is private and removed here.
+	defer removeStage(r.dir)
 	unlock, err := s.lockContext(ctx)
 	if err != nil {
 		return m, "", err
 	}
 	defer unlock()
-	token, err := s.availableToken()
+	if o.Replace != "" {
+		m, err = s.replaceLocked(ctx, r, o)
+	} else {
+		m, err = s.activateLocked(ctx, r, o)
+	}
 	if err != nil {
 		return m, "", err
 	}
+	warning := ""
+	if !r.single && !r.hasIndex {
+		warning = "no root index.html: the directory URL will return 404; individual file URLs remain usable"
+	}
+	return m, warning, nil
+}
+
+func (s *store) activateLocked(ctx context.Context, r *stagedRelease, o releaseOptions) (manifest, error) {
+	m := manifest{Files: r.files, Bytes: r.bytes}
+	token, err := s.availableToken()
+	if err != nil {
+		return m, err
+	}
 	m.Token = token
-	m.Label = label
+	m.Label = o.Label
 	m.CreatedAt = time.Now().UTC()
-	m.SourceBasename = p.name
-	m.SPA = spa
-	m.URL = s.baseURL + "/" + token + "/"
-	if p.single {
-		m.OriginalFilename = p.name
-		// A lone index.html is a one-page site: the static server already
-		// serves it at the release root, so report that shareable URL.
-		if p.name != "index.html" {
-			m.URL += url.PathEscape(p.name)
-		}
+	m.SourceBasename = r.name
+	m.SPA = o.SPA
+	m.ExpiresAt = o.ExpiresAt
+	m.URL = r.url(s.baseURL, token)
+	if r.single {
+		m.OriginalFilename = r.name
 	}
 	if err = s.writeManifest(m); err != nil {
-		return m, "", err
+		return m, err
 	}
 	// Both private records are persisted before the only public activation rename.
 	cleanupMetadata := func() error {
 		return errors.Join(os.Remove(filepath.Join(s.manifests, token+".json")), os.Remove(filepath.Join(s.policies, token+".json")))
 	}
-	if err = writePrivateJSON(filepath.Join(s.policies, token+".json"), policy); err != nil {
+	if err = writePrivateJSON(filepath.Join(s.policies, token+".json"), *o.Policy); err != nil {
 		cleanupErr := os.Remove(filepath.Join(s.manifests, token+".json"))
 		if removeErr := os.Remove(filepath.Join(s.policies, token+".json")); !errors.Is(removeErr, fs.ErrNotExist) {
 			cleanupErr = errors.Join(cleanupErr, removeErr)
 		}
-		return m, "", errors.Join(err, cleanupErr)
+		return m, errors.Join(err, cleanupErr)
 	}
 	if err = ctx.Err(); err != nil {
-		return m, "", errors.Join(err, cleanupMetadata())
+		return m, errors.Join(err, cleanupMetadata())
 	}
 	// Do not observe cancellation after activation begins: finish the bounded
 	// rename/freeze transaction and report its known outcome to the caller.
-	if err = os.Rename(stage, filepath.Join(s.public, token)); err != nil {
+	if err = os.Rename(r.dir, filepath.Join(s.public, token)); err != nil {
 		cleanupErr := cleanupMetadata()
-		return m, "", errors.Join(fmt.Errorf("activate release: %w", err), cleanupErr)
+		return m, errors.Join(fmt.Errorf("activate release: %w", err), cleanupErr)
 	}
 	if err = os.Chmod(filepath.Join(s.public, token), 0555); err != nil {
-		rollbackErr := os.Rename(filepath.Join(s.public, token), stage)
+		rollbackErr := os.Rename(filepath.Join(s.public, token), r.dir)
 		if rollbackErr == nil {
 			rollbackErr = cleanupMetadata()
 		}
-		return m, "", errors.Join(fmt.Errorf("freeze activated release %s: %w", m.URL, err), rollbackErr)
+		return m, errors.Join(fmt.Errorf("freeze activated release %s: %w", m.URL, err), rollbackErr)
 	}
-	warning := ""
-	if !p.single && !p.hasIndex {
-		warning = "no root index.html: the directory URL will return 404; individual file URLs remain usable"
+	return m, nil
+}
+
+// replaceLocked swaps new content into an existing release. A new password is
+// written before the swap, so a crash can leave the old content protected but
+// never the new content public. The manifest is written before the swap and
+// restored if the swap fails.
+func (s *store) replaceLocked(ctx context.Context, r *stagedRelease, o releaseOptions) (manifest, error) {
+	old, err := s.activeManifest(o.Replace)
+	if err != nil {
+		return manifest{}, err
 	}
-	return m, warning, nil
+	m := old
+	m.Files, m.Bytes, m.SPA = r.files, r.bytes, o.SPA
+	m.SourceBasename = r.name
+	m.OriginalFilename = ""
+	if r.single {
+		m.OriginalFilename = r.name
+	}
+	m.URL = r.url(s.baseURL, old.Token)
+	if o.Label != "" {
+		m.Label = o.Label
+	}
+	if !o.KeepExpiry {
+		m.ExpiresAt = o.ExpiresAt
+	}
+	now := time.Now().UTC()
+	m.UpdatedAt = &now
+	if err = ctx.Err(); err != nil {
+		return old, err
+	}
+	if o.Policy != nil {
+		if err = writePrivateJSON(filepath.Join(s.policies, old.Token+".json"), *o.Policy); err != nil {
+			return old, err
+		}
+	}
+	if err = s.writeManifest(m); err != nil {
+		return old, err
+	}
+	if err = s.swapRelease(old.Token, r.dir); err != nil {
+		return old, errors.Join(fmt.Errorf("swap release content: %w", err), s.writeManifest(old))
+	}
+	return m, nil
+}
+
+// renameExchange atomically exchanges two paths (Linux renameat2). Tests
+// replace it to exercise the fallback for filesystems without the flag.
+var renameExchange = func(a, b string) error {
+	return unix.Renameat2(unix.AT_FDCWD, a, unix.AT_FDCWD, b, unix.RENAME_EXCHANGE)
+}
+
+// swapRelease puts the frozen stage at public/token and the previous content
+// at the stage path. Visitors see either the old or the new tree, never a
+// mix within one file. Without RENAME_EXCHANGE it falls back to two renames,
+// a sub-millisecond window in which the release returns 404.
+func (s *store) swapRelease(token, stage string) error {
+	live := filepath.Join(s.public, token)
+	// Linux needs write permission on a directory that moves to a new parent.
+	if err := os.Chmod(live, 0755); err != nil {
+		return err
+	}
+	err := renameExchange(stage, live)
+	if errors.Is(err, unix.EINVAL) || errors.Is(err, unix.ENOSYS) || errors.Is(err, unix.EOPNOTSUPP) {
+		err = swapByRename(live, stage)
+	}
+	if err != nil {
+		return errors.Join(err, os.Chmod(live, 0555))
+	}
+	return os.Chmod(live, 0555)
+}
+
+func swapByRename(live, stage string) error {
+	previous := stage + ".previous"
+	if err := os.Rename(live, previous); err != nil {
+		return err
+	}
+	if err := os.Rename(stage, live); err != nil {
+		return errors.Join(err, os.Rename(previous, live))
+	}
+	return os.Rename(previous, stage)
+}
+
+// setExpiry changes when a release is deleted; nil means never.
+func (s *store) setExpiry(token string, at *time.Time) (manifest, error) {
+	unlock, err := s.lock()
+	if err != nil {
+		return manifest{}, err
+	}
+	defer unlock()
+	m, err := s.activeManifest(token)
+	if err != nil {
+		return m, err
+	}
+	m.ExpiresAt = at
+	return m, s.writeManifest(m)
 }
 
 func (s *store) availableToken() (string, error) {
