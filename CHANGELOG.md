@@ -10,6 +10,32 @@ Each release on GitHub also lists every commit and the issues it closed.
 
 ## [Unreleased]
 
+### Added
+
+- Panels in the chat (MCP Apps). Claude and other hosts that support MCP Apps
+  show an interactive panel next to some results; other clients get the same
+  text results as before. A release card for `publish_files`,
+  `publish_archive`, `release_info`, `set_expiry`, `set_password` and
+  `remove_password` shows the link with copy and open buttons, access, size
+  and expiry, with buttons to keep the release 30 days, 1 year or forever
+  ([#23](https://github.com/ArtemD/agent-fileserver/issues/23)). A dashboard for `list_releases` shows totals and every release,
+  sorts and filters them, and keeps or deletes a release (delete needs a
+  second click) ([#24](https://github.com/ArtemD/agent-fileserver/issues/24)).
+- `upload_from_computer`: opens a drop zone in the chat where you pick a file
+  from your own computer. The panel hashes it, gets a one-time ticket from
+  `begin_upload`, uploads it with a progress bar and tells the agent the URL
+  ([#25](https://github.com/ArtemD/agent-fileserver/issues/25)).
+
+### Changed
+
+- `PUT /_upload` answers CORS (`OPTIONS` preflight, `Access-Control-Allow-Origin: *`,
+  no credentials) and no longer refuses requests with a foreign `Origin`, so
+  the upload panel can send the file from the host's sandbox. The one-time
+  ticket stays the only credential, management keys stay refused there, and
+  `/mcp` keeps its strict origin check ([#25](https://github.com/ArtemD/agent-fileserver/issues/25)).
+- The service image embeds the panels from `ui/`; rebuild the image when you
+  upgrade, as usual ([#23](https://github.com/ArtemD/agent-fileserver/issues/23)).
+
 ## [0.3.0] - 2026-11-02
 
 ### Added

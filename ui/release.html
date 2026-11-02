@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Release</title>
+<style>/*FSERVER:BASE_CSS*/</style>
+<style>
+  .card { display: flex; flex-direction: column; gap: 10px; }
+  .title { font-size: 16px; font-weight: 600; word-break: break-word; }
+  .url { padding: 6px 8px; background: var(--fs-bg-2); border: 1px solid var(--fs-border); border-radius: var(--fs-radius); user-select: all; }
+  .actions { margin-top: 2px; }
+  .status { font-size: 13px; }
+  .status.ok { color: var(--fs-ok); }
+</style>
+</head>
+<body><main id="app" class="muted">Waiting for the result…</main>
+<script>/*FSERVER:BRIDGE*/</script>
+<script>
+(function () {
+  "use strict";
+  var el = fserver.el;
+  var app = document.getElementById("app");
+  var current = null;   // the release view being shown
+  var busy = false;
+  var note = null;      // {kind: "ok"|"error", text, hint} shown under the buttons
+  var copyNote = "";    // "Copied" or a select-it hint
+
+  function show(nodes) {
+    while (app.firstChild) { app.removeChild(app.firstChild); }
+    nodes.forEach(function (n) { if (n) { app.appendChild(n); } });
+    fserver.resize();
+  }
+
+  function plain(text) {
+    app.className = "muted";
+    current = null;
+    show([document.createTextNode(text)]);
+  }
+
+  function errorNodes(d) {
+    var out = [el("div", { class: "error", role: "alert" }, String(d.error || "Something went wrong"))];
+    if (d.entry) { out.push(el("div", { class: "muted mono" }, String(d.entry))); }
+    if (d.reason) { out.push(el("div", { class: "muted" }, String(d.reason))); }
+    if (d.hint) { out.push(el("div", { class: "hint" }, String(d.hint))); }
+    return out;
+  }
+
+  function showError(d) {
+    app.className = "";
+    current = null;
+    show([el.apply(null, ["div", { class: "card" }].concat(errorNodes(d)))]);
+  }
+
+  function title(v) {
+    return fserver.releaseName(v) || "Release";
+  }
+
+  function plural(n, one, many) { return n + " " + (n === 1 ? one : many); }
+
+  function selectText(node) {
+    try {
+      var range = document.createRange();
+      range.selectNodeContents(node);
+      var sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+    } catch (e) { /* selection is best effort */ }
+  }
+
+  function urlRow(v) {
+    if (!fserver.safeURL(v.url)) {
+      return el("div", { class: "row" }, el("span", { class: "muted" }, "link withheld"));
+    }
+    var urlNode = el("span", { class: "mono url", id: "release-url" }, v.url);
+    var copied = el("span", { class: "muted status", role: "status" }, copyNote);
+    return el("div", { class: "card" },
+      urlNode,
+      el("div", { class: "row actions" },
+        el("button", { type: "button", class: "primary", onclick: function () {
+          fserver.copy(v.url).then(function (ok) {
+            if (ok) {
+              copied.textContent = "Copied";
+            } else {
+              selectText(urlNode);
+              copied.textContent = "Copy failed. The link is selected, press Ctrl+C or Cmd+C.";
+            }
+            fserver.resize();
+          });
+        } }, "Copy"),
+        el("button", { type: "button", onclick: function () {
+          fserver.openLink(v.url).catch(function () {
+            copied.textContent = "The host did not open the link.";
+            fserver.resize();
+          });
+        } }, "Open"),
+        copied));
+  }
+
+  function badges(v) {
+    var row = el("div", { class: "row" });
+    row.appendChild(v.protected ? el("span", { class: "badge warn" }, "Password: " + (v.username || "viewer")) : el("span", { class: "badge ok" }, "Public"));
+    row.appendChild(el("span", { class: "badge" }, fserver.fmtBytes(v.bytes)));
+    var n = typeof v.files === "number" ? v.files : 0;
+    row.appendChild(el("span", { class: "badge" }, plural(n, "file", "files")));
+    return row;
+  }
+
+  function dates(v) {
+    var row = el("div", { class: "row muted" });
+    if (v.created_at) { row.appendChild(el("span", {}, "Created " + fserver.fmtDate(v.created_at))); }
+    if (v.updated_at) { row.appendChild(el("span", {}, "Updated " + fserver.fmtDate(v.updated_at))); }
+    return row;
+  }
+
+  function expiry(v) {
+    var row = el("div", { class: "row" });
+    if (!v.expires_at) {
+      row.appendChild(el("span", {}, "Never expires"));
+      return row;
+    }
+    var days = fserver.daysLeft(v.expires_at);
+    if (days === null) {
+      row.appendChild(el("span", { class: "muted" }, "Expiry unknown"));
+    } else if (days <= 0) {
+      row.appendChild(el("span", { class: "badge danger" }, "Expired"));
+      row.appendChild(el("span", { class: "muted" }, fserver.fmtDate(v.expires_at)));
+    } else {
+      row.appendChild(el("span", {}, "Expires " + fserver.fmtDate(v.expires_at) + " (in " + plural(days, "day", "days") + ")"));
+      if (days <= 7) { row.appendChild(el("span", { class: "badge warn" }, "Expires soon")); }
+    }
+    return row;
+  }
+
+  function keepButton(label, days) {
+    return el("button", { type: "button", disabled: busy, onclick: function () { keep(days); } }, label);
+  }
+
+  function keepRow(v) {
+    var row = el("div", { class: "row" },
+      keepButton("Keep 30 days", 30),
+      keepButton("Keep 1 year", 365),
+      v.expires_at ? keepButton("Keep forever", 0) : null);
+    if (note) {
+      if (note.kind === "ok") {
+        row.appendChild(el("span", { class: "status ok", role: "status" }, note.text));
+      }
+    }
+    return row;
+  }
+
+  function render(v) {
+    current = v;
+    app.className = "";
+    var nodes = [
+      el("div", { class: "title" }, title(v)),
+      urlRow(v),
+      badges(v),
+      dates(v),
+      expiry(v),
+      keepRow(v)
+    ];
+    if (note && note.kind === "error") {
+      nodes.push(el("div", { class: "error", role: "alert" }, note.text));
+      if (note.hint) { nodes.push(el("div", { class: "hint" }, note.hint)); }
+    }
+    show([el.apply(null, ["div", { class: "card" }].concat(nodes))]);
+  }
+
+  function keep(days) {
+    if (busy || !current) { return; }
+    var token = current.token;
+    busy = true;
+    note = null;
+    render(current);
+    fserver.ready.then(function () {
+      return fserver.call("set_expiry", { token: token, expires_in_days: days });
+    }).then(function (res) {
+      busy = false;
+      var d = res.data;
+      if (res.isError || !d || !d.token) {
+        note = { kind: "error", text: String((d && d.error) || "Could not change the expiry"), hint: d && d.hint ? String(d.hint) : "" };
+        render(current);
+        return;
+      }
+      note = { kind: "ok", text: "Saved" };
+      render(d);
+      fserver.updateContext("Release " + d.token + (d.expires_at ? " now expires at " + d.expires_at : " now never expires"));
+    }).catch(function (e) {
+      busy = false;
+      note = { kind: "error", text: "The host could not run the tool.", hint: "Nothing was changed. Try again, or ask the assistant to set the expiry." };
+      if (current) { render(current); }
+    });
+  }
+
+  fserver.onToolResult(function (r) {
+    var res = fserver.parseResult(r);
+    var d = res.data;
+    note = null;
+    copyNote = "";
+    if (res.isError || !d.token) {
+      showError(d.error ? d : { error: "unreadable tool result", hint: "Ask the assistant to run the tool again." });
+      return;
+    }
+    render(d);
+  });
+  fserver.onToolCancelled(function () { plain("Cancelled."); });
+  fserver.onContext(function () { fserver.resize(); });
+  fserver.ready.then(function () { fserver.resize(); });
+})();
+</script>
+</body></html>

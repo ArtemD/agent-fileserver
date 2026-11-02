@@ -60,6 +60,30 @@ for path in tracked():
         if Path(path).name not in testing:
             fail(f"{path} is not mentioned in docs/TESTING.md")
 
+# 2b. MCP Apps panels: every ui/*.html is registered in ui.go, has a browser test
+# and is documented; browser tests are documented and run in CI. Panel code
+# never uses HTML-injection sinks or loads anything from another origin.
+ui_go = read("ui.go")
+for path in tracked():
+    name = Path(path).name
+    if path.startswith("tests/") and path.endswith(".test.mjs") and name not in testing:
+        fail(f"{path} is not mentioned in docs/TESTING.md")
+    if path.startswith("ui/") and path.endswith(".html"):
+        if '"' + name + '"' not in ui_go:
+            fail(f"{path} is not registered as a panel in ui.go")
+        if f"tests/ui_{Path(path).stem}.test.mjs" not in tracked():
+            fail(f"{path} has no browser test tests/ui_{Path(path).stem}.test.mjs")
+        if f"ui/{name}" not in read("docs/MCP.md") and name not in read("docs/MCP.md"):
+            fail(f"{path} is not documented in docs/MCP.md")
+    if path.startswith("ui/") and path.endswith((".html", ".js", ".css")):
+        text = read(path)
+        for sink in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "new Function",
+                     "javascript:", "@import"):
+            if sink in text:
+                fail(f"{path} uses {sink}; build DOM with fserver.el/textContent and keep everything inline")
+        if re.search(r"""(?:\b(?:src|href|action)\s*=\s*["']?|url\(\s*["']?)(?:https?:)?//""", text):
+            fail(f"{path} loads a resource from another origin; panels must be self-contained")
+
 # 3. Removed interfaces stay removed: MCP is the only management interface.
 docs = [p for p in tracked() if p.endswith(".md")] + ["deploy/caddy/routes.caddy", "compose.yaml", ".env.example"]
 for path in docs:
@@ -95,6 +119,7 @@ for command in ("go test -race .", "go vet .", "gofmt -l", "go mod verify",
                 "docker compose up -d --build --wait",
                 "scripts/check_commits.py --self-test", "scripts/check_commits.py --verify-issues",
                 ".githooks/commit-msg .githooks/pre-push", "rhysd/actionlint:",
+                "tests/ui_*.test.mjs", "playwright@1.",
                 *("tests/" + Path(p).name for p in tracked()
                   if p.startswith("tests/") and p.endswith(".py") and p not in helpers)):
     if command not in workflow:

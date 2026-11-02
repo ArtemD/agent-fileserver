@@ -10,11 +10,12 @@
 Let your AI agents publish static websites, prototypes, PDFs and files to your
 own server over **remote MCP**, and get back a fresh, unguessable URL to share.
 
-- **MCP is the only management interface.** No web UI, no REST API, no upload form, no SSH publishing.
+- **MCP is the only management interface.** No web UI, no REST API, no upload form, no SSH publishing. In clients that support MCP Apps (Claude), tool results can also show an interactive panel in the chat; the panels are MCP resources, not pages the server hosts.
 - Publish a few files or **one ZIP/tar.gz for a whole website**, and **big files (up to 1 GiB by default)** through a one-time upload ticket that only the `begin_upload` MCP tool can mint.
 - Fresh unlisted URL per release; optional visitor password. Publish again with the release's `token` to update a page and keep its link.
 - Links **expire after 60 days** by default (operator setting); an agent can keep one longer with `set_expiry`.
 - List, inspect, download (≤ 1 MiB), delete, and set/reset/remove passwords.
+- **Panels in Claude:** a release card, a releases dashboard and an upload panel where you drop a file from your own computer ([details](#panels-in-the-chat)).
 - Docker Compose: Caddy serves bytes; a sandboxed Go service (no network) handles MCP on a private Unix socket.
 - No database, analytics, uploaded code execution or directory listing.
 - MIT licensed. One installation per owner; give other people their own instance.
@@ -98,6 +99,8 @@ only without it. Both are redacted from access logs. There is no OAuth.
 4. **Request headers → Add header:** name `x-auth-token`, value = the key only
    (no `Bearer ` prefix). Keep **Required** ticked. Ignore the OAuth client section.
 5. **Add**, then in a chat enable the connector and ask *"list my fserver releases"*.
+   The first time a tool wants to show a panel, Claude asks whether to allow
+   the app. Allow it; see [Panels in the chat](#panels-in-the-chat).
 6. Recommended: in the connector's tool permissions, set **Delete release** to
    *ask* — deletion is permanent.
 
@@ -143,10 +146,42 @@ Just ask your agent, for example:
 | `publish_files` | A few UTF-8 or base64 files |
 | `publish_archive` | One base64 ZIP, tar or tar.gz; unpacked server-side |
 | `begin_upload` | One-time ticket and `curl` command to upload a large file or archive (up to 1 GiB by default) |
+| `upload_from_computer` | Shows an upload panel in the chat where you drop or pick a file from your own computer; clients without MCP Apps use `begin_upload` |
 | `set_expiry` | Change when a release is deleted automatically; `0` keeps it forever |
 | `download_release` | Inline base64 download, up to 1 MiB |
 | `delete_release` | Permanently delete a release |
 | `set_password` / `reset_password` / `remove_password` | Visitor access (username `viewer`) |
+
+### Panels in the chat
+
+Clients that support [MCP Apps](https://github.com/modelcontextprotocol/ext-apps)
+(Claude on the web and desktop; the mobile app shows them too) render an
+interactive panel for some tools. You connect the same way and nothing needs
+configuring: panels appear automatically. The first time, Claude asks you to
+allow the app. Clients without MCP Apps get the same text results as before.
+
+| Panel | Shown for | What it does |
+|---|---|---|
+| Release card | `publish_files`, `publish_archive`, `release_info`, `set_expiry`, `set_password`, `remove_password` | The link with copy and open buttons, access, size, dates and expiry, with *Keep 30 days*, *1 year* and *forever* buttons |
+| Releases dashboard | `list_releases` | Totals, a filter, sorting by newest, largest or expiring, and per release: open, copy, keep forever and delete (a second click confirms) |
+| Upload panel | `upload_from_computer` | You drop or pick a file; the panel checks its SHA-256, asks for a ticket, sends the bytes with a progress bar and shows the release |
+
+Ask *"let me upload a file from my computer"* to get the upload panel. A
+`.zip`, `.tar`, `.tar.gz` or `.tgz` is published as a website unless you tick
+*Publish as one file*. Options such as a password, a label or an expiry go to
+the agent in the request, for example *"upload a PDF from my computer with
+password `correct-horse-42`"*.
+
+Good to know:
+
+- Buttons call the same tools through Claude with your connector's key, so
+  permissions, audit and limits are unchanged. Deleting asks for a second click.
+- Panels show tool data as text only and open or copy only links under your own
+  server's URL. Opening a link asks you to confirm in Claude.
+- Claude currently limits which domains a panel may embed, so the card shows no
+  live preview of the site.
+- A very large `list_releases` result (in Claude, over about 150,000
+  characters) may not fill the dashboard. The text result still works.
 
 ### Publish a big file or site
 
@@ -208,6 +243,9 @@ published before this feature never expire. Details:
 - Upload tickets are 256-bit, single-use, expire after 30 minutes, work only on
   `PUT /_upload` and are revoked with the key that minted them. Management keys
   are refused there.
+- `/_upload` answers CORS for any origin, because the upload panel runs on an
+  origin the chat host picks and the ticket is the only credential (no cookies,
+  no ambient access). `/mcp` has no CORS and still checks `Origin`.
 - Containers run as non-root with read-only filesystems and all capabilities
   dropped (Caddy keeps only the one its official binary needs to start); the
   MCP service has no network at all and cannot change keys. See [architecture/security](docs/ARCHITECTURE.md) and [SECURITY.md](SECURITY.md).

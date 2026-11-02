@@ -1,0 +1,50 @@
+/* Shared panel styles. Host CSS variables (MCP Apps hostContext.styles) win;
+   the fallbacks below follow the light or dark theme the host reports. */
+:root {
+  color-scheme: light dark;
+  --fs-bg: var(--color-background-primary, #ffffff);
+  --fs-bg-2: var(--color-background-secondary, #f4f4f5);
+  --fs-text: var(--color-text-primary, #18181b);
+  --fs-text-2: var(--color-text-secondary, #52525b);
+  --fs-border: var(--color-border-primary, #e4e4e7);
+  --fs-accent: #2563eb;
+  --fs-ok: #15803d;
+  --fs-warn: #b45309;
+  --fs-danger: #b91c1c;
+  --fs-radius: var(--border-radius-md, 8px);
+  --fs-font: var(--font-sans, system-ui, -apple-system, "Segoe UI", sans-serif);
+  --fs-mono: var(--font-mono, ui-monospace, "SFMono-Regular", Menlo, monospace);
+}
+:root[data-theme="dark"] {
+  --fs-bg: var(--color-background-primary, #18181b);
+  --fs-bg-2: var(--color-background-secondary, #27272a);
+  --fs-text: var(--color-text-primary, #f4f4f5);
+  --fs-text-2: var(--color-text-secondary, #a1a1aa);
+  --fs-border: var(--color-border-primary, #3f3f46);
+  --fs-accent: #60a5fa;
+  --fs-ok: #4ade80;
+  --fs-warn: #fbbf24;
+  --fs-danger: #f87171;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; background: var(--fs-bg); color: var(--fs-text); font: 14px/1.45 var(--fs-font); }
+body { padding: 12px; }
+a { color: var(--fs-accent); }
+button {
+  font: inherit; color: var(--fs-text); background: var(--fs-bg-2); border: 1px solid var(--fs-border);
+  border-radius: var(--fs-radius); padding: 5px 10px; cursor: pointer;
+}
+button:hover:not(:disabled) { border-color: var(--fs-accent); }
+button:disabled { opacity: 0.5; cursor: default; }
+button.primary { background: var(--fs-accent); border-color: var(--fs-accent); color: #fff; }
+button.danger { color: var(--fs-danger); }
+input, select { font: inherit; color: var(--fs-text); background: var(--fs-bg); border: 1px solid var(--fs-border); border-radius: var(--fs-radius); padding: 5px 8px; }
+.muted { color: var(--fs-text-2); }
+.mono { font-family: var(--fs-mono); word-break: break-all; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.badge { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; border: 1px solid var(--fs-border); }
+.badge.ok { color: var(--fs-ok); border-color: currentColor; }
+.badge.warn { color: var(--fs-warn); border-color: currentColor; }
+.badge.danger { color: var(--fs-danger); border-color: currentColor; }
+.error { color: var(--fs-danger); }
+.hint { color: var(--fs-text-2); font-size: 13px; }

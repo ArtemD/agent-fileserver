@@ -1,0 +1,467 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Upload from computer</title>
+<style>/*FSERVER:BASE_CSS*/</style>
+<style>
+  main { display: flex; flex-direction: column; gap: 10px; max-width: 640px; }
+  h1 { font-size: 15px; margin: 0; }
+  .drop { border: 2px dashed var(--fs-border); border-radius: var(--fs-radius); padding: 22px 12px; text-align: center; background: var(--fs-bg-2); display: flex; flex-direction: column; gap: 8px; align-items: center; cursor: pointer; }
+  .drop:focus-visible { outline: 2px solid var(--fs-accent); outline-offset: 2px; }
+  .drop.over { border-color: var(--fs-accent); background: var(--fs-bg); }
+  .card { border: 1px solid var(--fs-border); border-radius: var(--fs-radius); padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+  progress { width: 100%; height: 10px; accent-color: var(--fs-accent); }
+  label.check { display: flex; gap: 8px; align-items: center; }
+  .name { font-weight: 600; word-break: break-all; }
+  .grow { flex: 1 1 200px; min-width: 0; }
+</style></head>
+<body><main id="app" class="muted">Loading…</main>
+<script>/*FSERVER:BRIDGE*/</script>
+<script>
+(function () {
+  "use strict";
+  var fs = window.fserver;
+  var el = fs.el;
+  var CHUNK = 4 * 1024 * 1024;
+
+  // ---- Streaming SHA-256 -------------------------------------------------
+  // Constants are the fractional parts of the cube and square roots of the
+  // first primes, per FIPS 180-4; the tests compare against node:crypto.
+  var K = new Uint32Array(64);
+  var H0 = new Uint32Array(8);
+  (function () {
+    var primes = [];
+    for (var n = 2; primes.length < 64; n++) {
+      var isPrime = true;
+      for (var d = 0; d < primes.length && primes[d] * primes[d] <= n; d++) {
+        if (n % primes[d] === 0) { isPrime = false; break; }
+      }
+      if (isPrime) { primes.push(n); }
+    }
+    primes.forEach(function (p, i) {
+      K[i] = Math.floor((Math.cbrt(p) % 1) * 4294967296);
+      if (i < 8) { H0[i] = Math.floor((Math.sqrt(p) % 1) * 4294967296); }
+    });
+  })();
+  function rotr(x, n) { return (x >>> n) | (x << (32 - n)); }
+
+  function Sha256() {
+    this.h = new Uint32Array(H0);
+    this.block = new Uint8Array(64);
+    this.fill = 0;
+    this.len = 0;
+    this.w = new Uint32Array(64);
+  }
+  Sha256.prototype.compress = function (b, off) {
+    var w = this.w, h = this.h, i;
+    for (i = 0; i < 16; i++) {
+      var j = off + i * 4;
+      w[i] = (b[j] << 24) | (b[j + 1] << 16) | (b[j + 2] << 8) | b[j + 3];
+    }
+    for (i = 16; i < 64; i++) {
+      var a = w[i - 15], c = w[i - 2];
+      var s0 = rotr(a, 7) ^ rotr(a, 18) ^ (a >>> 3);
+      var s1 = rotr(c, 17) ^ rotr(c, 19) ^ (c >>> 10);
+      w[i] = (w[i - 16] + s0 + w[i - 7] + s1) | 0;
+    }
+    var A = h[0], B = h[1], C = h[2], D = h[3], E = h[4], F = h[5], G = h[6], H = h[7];
+    for (i = 0; i < 64; i++) {
+      var t1 = (H + (rotr(E, 6) ^ rotr(E, 11) ^ rotr(E, 25)) + ((E & F) ^ (~E & G)) + K[i] + w[i]) | 0;
+      var t2 = ((rotr(A, 2) ^ rotr(A, 13) ^ rotr(A, 22)) + ((A & B) ^ (A & C) ^ (B & C))) | 0;
+      H = G; G = F; F = E; E = (D + t1) | 0; D = C; C = B; B = A; A = (t1 + t2) | 0;
+    }
+    h[0] += A; h[1] += B; h[2] += C; h[3] += D; h[4] += E; h[5] += F; h[6] += G; h[7] += H;
+  };
+  Sha256.prototype.update = function (data) {
+    var i = 0, n = data.length;
+    this.len += n;
+    if (this.fill) {
+      while (i < n && this.fill < 64) { this.block[this.fill++] = data[i++]; }
+      if (this.fill === 64) { this.compress(this.block, 0); this.fill = 0; }
+    }
+    for (; i + 64 <= n; i += 64) { this.compress(data, i); }
+    while (i < n) { this.block[this.fill++] = data[i++]; }
+  };
+  Sha256.prototype.hex = function () {
+    var b = this.block, len = this.len, i;
+    b[this.fill++] = 0x80;
+    if (this.fill > 56) {
+      while (this.fill < 64) { b[this.fill++] = 0; }
+      this.compress(b, 0);
+      this.fill = 0;
+    }
+    while (this.fill < 56) { b[this.fill++] = 0; }
+    var hi = Math.floor(len / 536870912), lo = (len << 3) >>> 0;
+    for (i = 0; i < 4; i++) { b[56 + i] = (hi >>> (24 - 8 * i)) & 255; b[60 + i] = (lo >>> (24 - 8 * i)) & 255; }
+    this.compress(b, 0);
+    var out = "";
+    for (i = 0; i < 8; i++) { out += ("00000000" + (this.h[i] >>> 0).toString(16)).slice(-8); }
+    return out;
+  };
+
+  // fsSha256Hex hashes a Blob/File (read in 4 MiB slices), an ArrayBuffer or a
+  // typed array and resolves to lowercase hex. onProgress(fraction) may return
+  // false to abort, which rejects with Error("cancelled").
+  window.fsSha256Hex = function (input, onProgress) {
+    var s = new Sha256();
+    var isBlob = typeof Blob !== "undefined" && input instanceof Blob;
+    var bytes = null;
+    if (!isBlob) {
+      bytes = input instanceof ArrayBuffer ? new Uint8Array(input) : new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
+    }
+    var total = isBlob ? input.size : bytes.length;
+    function step(off) {
+      if (off >= total) { return Promise.resolve(s.hex()); }
+      var end = Math.min(off + CHUNK, total);
+      var got = isBlob ? input.slice(off, end).arrayBuffer().then(function (ab) { return new Uint8Array(ab); })
+                       : Promise.resolve(bytes.subarray(off, end));
+      return got.then(function (u8) {
+        s.update(u8);
+        if (onProgress && onProgress(end / total) === false) { throw new Error("cancelled"); }
+        return step(end);
+      });
+    }
+    return step(0);
+  };
+
+  // ---- Panel state -------------------------------------------------------
+  var root = document.getElementById("app");
+  var s = {
+    phase: "wait", opts: {}, max: 0, file: null, one: false, key: null, sha: null,
+    xhr: null, run: 0, pct: 0, loaded: 0, notice: "", pickError: "", err: null, result: null, announced: false
+  };
+  var refs = {};
+
+  function randomKey() {
+    var b = new Uint8Array(16);
+    crypto.getRandomValues(b);
+    var out = "upl-";
+    for (var i = 0; i < b.length; i++) { out += ("0" + b[i].toString(16)).slice(-2); }
+    return out;
+  }
+  function isArchiveName(name) { return /\.(zip|tar|tar\.gz|tgz)$/i.test(name); }
+  function noop() {}
+
+  function setPhase(p) { s.phase = p; render(); }
+  function fail(error, hint) { s.err = { error: error, hint: hint || "" }; setPhase("failed"); }
+
+  // ---- Rendering ---------------------------------------------------------
+  function optionBadges() {
+    var o = s.opts, out = [];
+    if (o.label) { out.push(el("span", { class: "badge" }, "Label: " + o.label)); }
+    if (o.spa) { out.push(el("span", { class: "badge" }, "Single-page app")); }
+    if (o.password) { out.push(el("span", { class: "badge ok" }, "Password protected")); }
+    if (o.token) { out.push(el("span", { class: "badge" }, "Updates release " + o.token)); }
+    if (typeof o.expires_in_days === "number") {
+      out.push(el("span", { class: "badge" }, o.expires_in_days === 0 ? "Never expires" : "Expires in " + o.expires_in_days + (o.expires_in_days === 1 ? " day" : " days")));
+    }
+    return out;
+  }
+
+  function errorBlock(e) {
+    return el("div", { role: "alert" },
+      el("div", { class: "error" }, e.error),
+      e.hint ? el("div", { class: "hint" }, e.hint) : null);
+  }
+
+  function render() {
+    refs = {};
+    while (root.firstChild) { root.removeChild(root.firstChild); }
+    root.className = "";
+    root.appendChild(el("div", { class: "row" }, el("h1", {}, "Upload from your computer")));
+    var badges = optionBadges();
+    if (badges.length) { root.appendChild(el.apply(null, ["div", { class: "row" }].concat(badges))); }
+    var view = {
+      wait: viewWait, fatal: viewFatal, pick: viewPick, ready: viewReady, hashing: viewBusy,
+      starting: viewBusy, uploading: viewBusy, failed: viewFailed, done: viewDone
+    }[s.phase];
+    root.appendChild(view());
+    fs.resize();
+  }
+
+  function viewWait() { return el("div", { class: "muted" }, "Waiting for the upload options…"); }
+  function viewFatal() { return errorBlock(s.err); }
+
+  function viewPick() {
+    var input = el("input", { type: "file", id: "file", hidden: true, "aria-label": "File to upload" });
+    input.addEventListener("change", function () {
+      if (input.files && input.files.length) { choose(input.files); }
+      input.value = "";
+    });
+    function openPicker() { input.click(); }
+    var zone = el("div", { class: "drop", id: "drop", tabindex: "0", role: "button", "aria-label": "Drop a file here or choose one" },
+      el("div", {}, "Drop a file here"),
+      el("div", { class: "muted" }, "Up to " + fs.fmtBytes(s.max) + ". One file at a time: a website as .zip, .tar or .tar.gz, or any single file."),
+      el("button", { type: "button", class: "primary", id: "choose", onclick: function (e) { e.stopPropagation(); openPicker(); } }, "Choose file"));
+    zone.addEventListener("click", openPicker);
+    zone.addEventListener("keydown", function (e) {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openPicker(); }
+    });
+    zone.addEventListener("dragenter", function (e) { e.preventDefault(); zone.classList.add("over"); });
+    zone.addEventListener("dragover", function (e) {
+      e.preventDefault();
+      if (e.dataTransfer) { e.dataTransfer.dropEffect = "copy"; }
+      zone.classList.add("over");
+    });
+    zone.addEventListener("dragleave", function () { zone.classList.remove("over"); });
+    zone.addEventListener("drop", function (e) {
+      e.preventDefault();
+      zone.classList.remove("over");
+      if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) { choose(e.dataTransfer.files); }
+    });
+    return el("div", { class: "card" },
+      zone, input,
+      s.pickError ? el("div", { class: "error", role: "alert", id: "pick-error" }, s.pickError) : null);
+  }
+
+  function singleFile() { return !isArchiveName(s.file.name) || s.one; }
+
+  function viewReady() {
+    var f = s.file;
+    var box = null;
+    if (isArchiveName(f.name)) {
+      box = el("input", { type: "checkbox", id: "one", checked: s.one, onchange: function (e) { s.one = e.target.checked; render(); } });
+      // checked is a property for checkboxes; make sure the DOM matches state.
+      box.checked = s.one;
+    }
+    var what = singleFile()
+      ? "Published as one file named " + f.name + "."
+      : "Published as a website: the archive is unpacked.";
+    var who = s.opts.password ? "Visitors need the password you set." : "Public on the internet: anyone with the link can open it.";
+    return el("div", { class: "card" },
+      el("div", {}, el("span", { class: "name" }, f.name), " ", el("span", { class: "muted" }, fs.fmtBytes(f.size))),
+      box ? el("label", { class: "check" }, box, "Publish as one file") : null,
+      el("div", { class: "muted" }, what),
+      singleFile() && s.opts.spa ? el("div", { class: "hint" }, "Single-page app mode applies to website archives only, so it is not used for one file.") : null,
+      el("div", { class: "muted" }, who),
+      s.notice ? el("div", { class: "muted", role: "status" }, s.notice) : null,
+      el("div", { class: "row" },
+        el("button", { type: "button", class: "primary", onclick: start }, "Publish"),
+        el("button", { type: "button", onclick: reset }, "Choose another file")));
+  }
+
+  function viewBusy() {
+    var label = s.phase === "hashing" ? "Hashing… " + s.pct + "%"
+      : s.phase === "starting" ? "Preparing the upload…"
+      : "Uploading… " + s.pct + "% (" + fs.fmtBytes(s.loaded) + " of " + fs.fmtBytes(s.file.size) + ")";
+    refs.text = el("div", { role: "status", id: "status" }, label);
+    refs.bar = el("progress", { max: "100", value: String(s.pct) });
+    return el("div", { class: "card" },
+      el("div", {}, el("span", { class: "name" }, s.file.name), " ", el("span", { class: "muted" }, fs.fmtBytes(s.file.size))),
+      refs.text,
+      s.phase === "starting" ? null : refs.bar,
+      s.phase === "starting" ? null : el("div", { class: "row" }, el("button", { type: "button", onclick: cancel }, "Cancel")));
+  }
+
+  function showProgress(label, pct) {
+    s.pct = pct;
+    if (refs.text) { refs.text.textContent = label; }
+    if (refs.bar) { refs.bar.value = pct; }
+  }
+
+  function viewFailed() {
+    return el("div", { class: "card" },
+      el("div", {}, el("span", { class: "name" }, s.file ? s.file.name : "")),
+      errorBlock(s.err),
+      el("div", { class: "row" },
+        s.err.final ? null : el("button", { type: "button", class: "primary", onclick: start }, "Try again"),
+        el("button", { type: "button", onclick: reset }, s.err.final ? "Start over" : "Choose another file")));
+  }
+
+  function expiryText(iso) {
+    var d = fs.daysLeft(iso);
+    if (d === null) { return "Never expires"; }
+    var rel = d <= 0 ? "today" : d === 1 ? "in 1 day" : "in " + d + " days";
+    return "Expires " + fs.fmtDate(iso) + " (" + rel + ")";
+  }
+
+  function viewDone() {
+    var v = s.result, safe = fs.safeURL(v.url);
+    var name = v.label || s.file.name || fs.releaseName(v);
+    var copyBtn = el("button", { type: "button", id: "copy", onclick: function () {
+      fs.copy(v.url).then(function (ok) {
+        copyBtn.textContent = ok ? "Copied" : "Copy failed";
+        setTimeout(function () { copyBtn.textContent = "Copy"; }, 1500);
+      });
+    } }, "Copy");
+    var meta = [];
+    if (typeof v.files === "number") { meta.push(v.files + (v.files === 1 ? " file" : " files")); }
+    if (typeof v.bytes === "number") { meta.push(fs.fmtBytes(v.bytes)); }
+    meta.push(expiryText(v.expires_at));
+    return el("div", { class: "card", id: "result" },
+      el("div", { class: "row" },
+        el("span", { class: "name grow" }, name),
+        v.protected ? el("span", { class: "badge ok" }, "Password protected") : el("span", { class: "badge warn" }, "Public")),
+      safe ? el("div", { class: "mono" }, el("a", { href: v.url, target: "_blank", rel: "noopener noreferrer", onclick: function (e) { e.preventDefault(); fs.openLink(v.url).catch(noop); } }, v.url))
+           : el("div", { class: "error" }, "Link withheld: the server returned a URL outside this site."),
+      el("div", { class: "muted" }, meta.join(" · ")),
+      el("div", { class: "row" },
+        safe ? copyBtn : null,
+        safe ? el("button", { type: "button", onclick: function () { fs.openLink(v.url).catch(noop); } }, "Open") : null,
+        el("button", { type: "button", onclick: reset }, "Upload another file")));
+  }
+
+  // ---- Actions -----------------------------------------------------------
+  function reset() {
+    s.run++;
+    if (s.xhr) { try { s.xhr.abort(); } catch (e) { /* already done */ } s.xhr = null; }
+    s.file = null; s.one = false; s.key = null; s.sha = null; s.result = null; s.err = null;
+    s.notice = ""; s.pickError = ""; s.pct = 0; s.loaded = 0; s.announced = false;
+    setPhase("pick");
+  }
+
+  function choose(files) {
+    if (files.length > 1) {
+      s.pickError = "Drop one file at a time.";
+      return render();
+    }
+    var f = files[0];
+    if (f.size < 1) { s.pickError = "That file is empty."; return render(); }
+    if (f.size > s.max) {
+      s.pickError = "Too large: " + fs.fmtBytes(f.size) + ", limit " + fs.fmtBytes(s.max);
+      return render();
+    }
+    s.pickError = ""; s.notice = ""; s.err = null; s.sha = null; s.one = false;
+    s.file = f;
+    s.key = randomKey();
+    setPhase("ready");
+  }
+
+  function cancel() {
+    s.run++;
+    if (s.xhr) { try { s.xhr.abort(); } catch (e) { /* already done */ } s.xhr = null; }
+    s.notice = "Upload cancelled. Nothing was published.";
+    setPhase("ready");
+  }
+
+  function beginArgs() {
+    var o = s.opts;
+    var a = { size: s.file.size, sha256: s.sha, idempotency_key: s.key };
+    var single = singleFile();
+    if (single) { a.filename = s.file.name; }
+    if (typeof o.label === "string" && o.label) { a.label = o.label; }
+    if (o.spa === true && !single) { a.spa = true; }
+    if (typeof o.password === "string" && o.password) { a.password = o.password; }
+    if (typeof o.token === "string" && o.token) { a.token = o.token; }
+    if (typeof o.expires_in_days === "number") { a.expires_in_days = o.expires_in_days; }
+    return a;
+  }
+
+  function start() {
+    var run = ++s.run;
+    s.err = null; s.notice = "";
+    s.pct = 0; s.loaded = 0;
+    var work = fs.ready.then(function () {
+      if (s.sha) { return s.sha; }
+      setPhase("hashing");
+      return window.fsSha256Hex(s.file, function (p) {
+        if (run !== s.run) { return false; }
+        showProgress("Hashing… " + Math.floor(p * 100) + "%", Math.floor(p * 100));
+      }).then(function (hex) { if (run === s.run) { s.sha = hex; } return hex; });
+    }).then(function () {
+      if (run !== s.run) { return null; }
+      setPhase("starting");
+      return fs.call("begin_upload", beginArgs()).catch(function () {
+        var he = new Error("host");
+        he.__from = "host";
+        throw he;
+      });
+    }).then(function (r) {
+      if (!r || run !== s.run) { return; }
+      if (r.isError) { return fail(r.data.error || "Could not start the upload", r.data.hint); }
+      send(r.data, run);
+    });
+    work.catch(function (e) {
+      if (run !== s.run || (e && e.message === "cancelled")) { return; }
+      if (e && e.__from === "host") { return fail("Could not start the upload", "The host did not answer. Retrying is safe: the same upload key is reused, so it cannot publish twice."); }
+      fail("Could not read the file", "The file may have moved or changed. Choose it again, or try again if it is still in place.");
+    });
+  }
+
+  function send(d, run) {
+    var auth = d.headers && d.headers.Authorization;
+    if (d.upload_url !== fs.base + "/_upload" || !fs.safeURL(d.upload_url) || d.method !== "PUT" ||
+        typeof auth !== "string" || !/^Bearer [\x21-\x7e]+$/.test(auth)) {
+      s.err = { error: "Upload URL withheld", hint: "The server returned an upload address that is not this server's, so nothing was sent. Do not retry; tell the agent what happened.", final: true };
+      return setPhase("failed");
+    }
+    var xhr = new XMLHttpRequest();
+    s.xhr = xhr;
+    xhr.open("PUT", d.upload_url);
+    xhr.setRequestHeader("Authorization", auth);
+    xhr.setRequestHeader("Content-Type", "application/octet-stream");
+    setPhase("uploading");
+    var total = s.file.size;
+    function live() { return run === s.run && s.xhr === xhr; }
+    xhr.upload.onprogress = function (e) {
+      if (!live()) { return; }
+      var done = e.lengthComputable ? e.loaded : 0;
+      var pct = Math.min(100, Math.floor((done / total) * 100));
+      s.loaded = done;
+      showProgress("Uploading… " + pct + "% (" + fs.fmtBytes(done) + " of " + fs.fmtBytes(total) + ")", pct);
+    };
+    xhr.onerror = function () {
+      if (!live()) { return; }
+      s.xhr = null;
+      fail("Upload failed: network error", "The connection dropped or the server could not be reached. Try again: the same upload key is reused, so a retry cannot publish the file twice.");
+    };
+    xhr.onabort = function () { if (live()) { s.xhr = null; } };
+    xhr.onload = function () {
+      if (!live()) { return; }
+      s.xhr = null;
+      var body = null;
+      try { body = JSON.parse(xhr.responseText); } catch (e) { body = null; }
+      if (xhr.status >= 200 && xhr.status < 300) {
+        if (body && typeof body === "object" && typeof body.token === "string") { return done(body); }
+        return fail("Upload finished but the reply was unreadable", "Try again: the same upload key is reused, so the server returns the existing release instead of a duplicate.");
+      }
+      var msg = body && typeof body.error === "string" ? body.error : "Upload failed (status " + xhr.status + ")";
+      fail(msg, body && typeof body.hint === "string" ? body.hint : "Try again. If it keeps failing, tell the agent.");
+    };
+    try { xhr.send(s.file); } catch (e) { s.xhr = null; fail("Upload failed: network error", "The browser could not send the file. Try again."); }
+  }
+
+  function done(view) {
+    s.result = view;
+    setPhase("done");
+    if (s.announced) { return; }
+    s.announced = true;
+    var name = view.label || s.file.name || fs.releaseName(view);
+    var url = fs.safeURL(view.url) ? view.url : "(link withheld)";
+    var exp = view.expires_at ? "expires " + fs.fmtDate(view.expires_at) : "never expires";
+    fs.updateContext("Uploaded " + name + " as release " + view.token + ": " + url + " (" + exp + ")");
+    fs.message("Uploaded " + name + ": " + url);
+  }
+
+  // ---- Wiring ------------------------------------------------------------
+  // A stray drop outside the zone must not make the browser navigate to the file.
+  window.addEventListener("dragover", function (e) { e.preventDefault(); });
+  window.addEventListener("drop", function (e) { e.preventDefault(); });
+
+  fs.onToolInput(function (args) {
+    s.opts = args && typeof args === "object" ? args : {};
+    if (s.phase !== "wait") { render(); }
+  });
+  fs.onToolResult(function (r) {
+    if (s.phase !== "wait") { return; }
+    var p = fs.parseResult(r);
+    if (p.isError) {
+      s.err = { error: p.data.error || "The upload panel could not start", hint: p.data.hint || "Ask the agent to try again, or publish with begin_upload from a shell." };
+      return setPhase("fatal");
+    }
+    if (typeof p.data.max_bytes !== "number" || p.data.max_bytes < 1) {
+      s.err = { error: "The server did not report an upload limit", hint: "Ask the agent to open the upload panel again." };
+      return setPhase("fatal");
+    }
+    s.max = p.data.max_bytes;
+    setPhase("pick");
+  });
+  fs.onToolCancelled(function () {
+    if (s.phase === "wait") {
+      s.err = { error: "The upload panel was cancelled", hint: "Ask the agent to open it again." };
+      setPhase("fatal");
+    }
+  });
+  render();
+})();
+</script>
+</body></html>

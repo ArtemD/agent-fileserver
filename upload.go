@@ -11,7 +11,6 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -216,13 +215,24 @@ func (a *apiServer) serveUpload(w http.ResponseWriter, r *http.Request, id strin
 		apiError(w, 404, id, "not found")
 		return
 	}
-	u, _ := url.Parse(a.s.baseURL)
-	if origins := r.Header.Values("Origin"); len(origins) > 1 || len(origins) == 1 && origins[0] != u.Scheme+"://"+u.Host {
-		apiError(w, 403, id, "origin not allowed")
+	// Any origin may present a ticket: the upload panel (an MCP Apps iframe
+	// in the user's chat) runs on a host-chosen origin, possibly opaque
+	// "null". The ticket is the only credential; no cookies or ambient
+	// authority exist here, so CORS never lets a page do more than curl with
+	// the same ticket. Credentials mode stays off (no Allow-Credentials).
+	h := w.Header()
+	h.Set("Access-Control-Allow-Origin", "*")
+	h.Set("Access-Control-Expose-Headers", "X-Request-ID, Retry-After")
+	if r.Method == http.MethodOptions {
+		h.Set("Access-Control-Allow-Methods", "PUT")
+		h.Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+		h.Set("Access-Control-Max-Age", "600")
+		h.Set("Allow", "PUT, OPTIONS")
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 	if r.Method != http.MethodPut {
-		methodError(w, id, "PUT")
+		methodError(w, id, "PUT, OPTIONS")
 		return
 	}
 	now := time.Now()

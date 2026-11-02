@@ -20,6 +20,10 @@ update in place with token, the disk block in server_info, the list_releases
 totals object and the public Cache-Control. Real expiry deletion is covered by
 Go tests, not here. FSERVER_TEST_DEFAULT_EXPIRY_DAYS (default 60, the compose
 default) is the default_expiry_days this stack is expected to report.
+MCP Apps panels (issues #23-#25): ui:// resources over resources/list and
+resources/read, the tool-to-panel links in tools/list, upload_from_computer, and
+CORS on /_upload (preflight and a cross-origin PUT with a ticket). The panels'
+browser behaviour is tested separately with the tests/ui_*.test.mjs files.
 Set FSERVER_TEST_LARGE=1 for an additional exact-100-MiB decoded archive check
 and a 256 MiB single-file upload/download round trip.
 """
@@ -350,7 +354,7 @@ class MCPLive(unittest.TestCase):
         expected = {"server_info", "list_releases", "release_info", "publish_files",
                     "publish_archive", "download_release", "delete_release",
                     "set_password", "reset_password", "remove_password", "begin_upload",
-                    "set_expiry"}
+                    "set_expiry", "upload_from_computer"}
         check(expected <= tools.keys(), "required MCP tools missing")
         for name in ("publish_files", "publish_archive", "remove_password", "begin_upload"):
             check(tools[name].get("annotations", {}).get("openWorldHint") is True,
@@ -371,6 +375,11 @@ class MCPLive(unittest.TestCase):
               "set_expiry annotations mismatch (destructive, not read-only, not open-world)")
         check(set(tools["set_expiry"].get("inputSchema", {}).get("required", []))
               == {"token", "expires_in_days"}, "set_expiry required arguments mismatch")
+        annotations = tools["upload_from_computer"].get("annotations", {})
+        check(annotations.get("readOnlyHint") is True
+              and annotations.get("destructiveHint") is not True
+              and annotations.get("openWorldHint") is not True,
+              "upload_from_computer annotations mismatch (read-only, not destructive, not open-world)")
         me = self.tool("server_info", {})
         check(me.get("agent") == self.tag and me.get("namespace"),
               "authenticated MCP identity mismatch")
@@ -1019,6 +1028,145 @@ class MCPLive(unittest.TestCase):
         gone = self.release_totals()
         check(gone["count"] == before["count"] and gone["total_bytes"] == before["total_bytes"],
               "list_releases totals did not return to the start after the delete")
+
+    UI_URIS = {
+        "ui://agent-fileserver/release.html": "release",
+        "ui://agent-fileserver/releases.html": "releases",
+        "ui://agent-fileserver/upload.html": "upload",
+    }
+    UI_MIME = "text/html;profile=mcp-app"
+    UI_MARKERS = ("__FSERVER_BASE_URL__", "/*FSERVER:BRIDGE*/", "/*FSERVER:BASE_CSS*/")
+    UI_ORIGIN = re.compile(r"https?://[^/\"'\s]+\Z")
+    CORS_ORIGIN = "https://abc.claudemcpcontent.com"
+
+    def test_32_ui_resources_list_and_read(self):
+        listed = self.rpc("resources/list").get("resources")
+        check(isinstance(listed, list) and {r.get("uri") for r in listed} == set(self.UI_URIS)
+              and len(listed) == len(self.UI_URIS), "resources/list is not exactly the three ui:// panels")
+        bases = set()
+        for entry in listed:
+            uri = entry["uri"]
+            check(entry.get("mimeType") == self.UI_MIME, "panel resource has the wrong mimeType")
+            ui = (entry.get("_meta") or {}).get("ui")
+            check(isinstance(ui, dict) and ui.get("prefersBorder") is True,
+                  "panel resource lacks _meta.ui.prefersBorder")
+            domains = (ui.get("csp") or {}).get("connectDomains")
+            if self.UI_URIS[uri] == "upload":
+                check(isinstance(domains, list) and len(domains) == 1
+                      and isinstance(domains[0], str) and self.UI_ORIGIN.match(domains[0]),
+                      "upload panel connectDomains is not exactly one origin")
+            else:
+                check(domains is None, "only the upload panel may declare connectDomains")
+            contents = self.rpc("resources/read", {"uri": uri}).get("contents")
+            check(isinstance(contents, list) and len(contents) == 1
+                  and contents[0].get("uri") == uri and contents[0].get("mimeType") == self.UI_MIME
+                  and contents[0].get("_meta") == entry["_meta"],
+                  "resources/read content item does not match resources/list")
+            html = contents[0].get("text")
+            check(isinstance(html, str) and "window.fserver" in html, "panel HTML lacks the bridge")
+            for marker in self.UI_MARKERS:
+                check(marker not in html, "panel HTML has a leftover marker")
+            found = re.search(r'\bBASE\s*=\s*"(https?://[^"]*)"', html)
+            check(found is not None, "panel HTML lacks the base URL as a JSON string")
+            bases.add(found.group(1))
+            if self.UI_URIS[uri] == "upload":
+                parts = urlsplit(found.group(1))
+                check(domains == [parts.scheme + "://" + parts.netloc],
+                      "upload connectDomains is not the origin of the panel base URL")
+        check(len(bases) == 1, "panels disagree on the base URL")
+        # An unknown ui:// URI is a protocol error, not an empty result.
+        message = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "resources/read",
+                              "params": {"uri": "ui://agent-fileserver/nope.html"}}).encode()
+        status, _, body = self.request("/mcp", "POST", body=message, headers={
+            "Content-Type": "application/json", "Accept": "application/json, text/event-stream",
+            "MCP-Protocol-Version": "2025-06-18"})
+        try:
+            refused = json.loads(body)
+        except ValueError:
+            raise LiveFailure("unknown resource response is not JSON") from None
+        check(status == 200 and isinstance(refused.get("error"), dict) and "result" not in refused,
+              "an unknown ui:// resource was not refused")
+
+    def test_33_tools_list_links_panels(self):
+        tools = {tool["name"]: tool for tool in self.rpc("tools/list").get("tools", [])}
+        release, releases, upload = list(self.UI_URIS)
+        linked = {"publish_files": release, "publish_archive": release, "release_info": release,
+                  "set_expiry": release, "set_password": release, "remove_password": release,
+                  "list_releases": releases, "upload_from_computer": upload}
+        for name, uri in linked.items():
+            meta = tools[name].get("_meta") or {}
+            check((meta.get("ui") or {}).get("resourceUri") == uri
+                  and meta.get("ui/resourceUri") == uri, "tool is not linked to its panel: " + name)
+        for name in ("begin_upload", "delete_release", "download_release", "reset_password",
+                     "server_info"):
+            meta = tools[name].get("_meta") or {}
+            check("ui" not in meta and "ui/resourceUri" not in meta,
+                  "tool must not be linked to a panel: " + name)
+
+    def test_34_upload_from_computer_validates_and_publishes_nothing(self):
+        limit = self.tool("server_info", {})["upload"]["max_bytes"]
+        before = self.release_totals()["count"]
+        result = self.tool("upload_from_computer", {})
+        check(result.get("max_bytes") == limit and isinstance(result.get("status"), str)
+              and result["status"] and isinstance(result.get("next"), str)
+              and "begin_upload" in result["next"], "upload_from_computer result mismatch")
+        options = self.tool("upload_from_computer", {
+            "label": self.tag + "-panel", "spa": True, "password": "panel-password-1",
+            "expires_in_days": 3})
+        check(options.get("max_bytes") == limit, "upload_from_computer rejected valid options")
+        self.tool_error("upload_from_computer", {"expires_in_days": 3651})
+        self.tool_error("upload_from_computer", {"password": "short"})
+        self.tool_error("upload_from_computer", {"token": "x"})
+        self.tool_error("upload_from_computer", {"bearer": "x"})
+        check(self.release_totals()["count"] == before, "upload_from_computer published something")
+
+    def test_35_upload_preflight_cors(self):
+        for origin in (self.CORS_ORIGIN, "null"):
+            status, headers, body = self.request("/_upload", "OPTIONS", anonymous=True, headers={
+                "Origin": origin, "Access-Control-Request-Method": "PUT",
+                "Access-Control-Request-Headers": "authorization, content-type"})
+            check(status == 204 and not body, "upload preflight is not 204 without a body")
+            check(headers.get("access-control-allow-origin") == "*"
+                  and "access-control-allow-credentials" not in headers,
+                  "upload preflight Allow-Origin is not * or allows credentials")
+            check(headers.get("access-control-allow-methods") == "PUT"
+                  and headers.get("access-control-allow-headers") == "Authorization, Content-Type",
+                  "upload preflight does not allow PUT with Authorization")
+        # Only the exact path takes part, and /mcp never answers CORS.
+        check(self.request("/_upload?x=1", "OPTIONS", anonymous=True,
+                           headers={"Origin": self.CORS_ORIGIN})[0] == 404,
+              "OPTIONS /_upload with a query string was not refused with 404")
+        status, headers, _ = self.request("/mcp", "POST", body=b"{}", headers={
+            "Origin": self.CORS_ORIGIN, "Content-Type": "application/json"})
+        check(status == 403 and "access-control-allow-origin" not in headers,
+              "/mcp with a foreign Origin was not refused without CORS headers")
+
+    def test_36_cross_origin_upload_with_ticket_publishes(self):
+        data = os.urandom(32 << 10)
+        path = self.write_fixture("cors.bin", data)
+        ticket = self.begin_upload(len(data), hashlib.sha256(data).hexdigest(),
+                                   filename="cors.bin", expires_in_days=1)
+        origin = {"Origin": self.CORS_ORIGIN}
+        # The preflight does not consume the ticket.
+        check(self.request("/_upload", "OPTIONS", anonymous=True, headers={
+            **origin, "Access-Control-Request-Method": "PUT"})[0] == 204, "preflight failed")
+        status, headers, body = self.put_upload(ticket, path, headers=origin)
+        view = self.uploaded_release(status, body, "cross-origin")
+        check(headers.get("access-control-allow-origin") == "*"
+              and "access-control-allow-credentials" not in headers,
+              "cross-origin upload response lacks Allow-Origin * or allows credentials")
+        self.public_bytes(view["token"], "cors.bin", data)
+        # Refusals are readable by the panel too; a management key is still no ticket.
+        for result in (self.put_upload(ticket, path, headers=origin),
+                       self.put_upload(None, path, key=self.key, headers=origin)):
+            check(self.auth_refused(result), "cross-origin upload without a valid ticket was accepted")
+            check(result[1].get("access-control-allow-origin") == "*",
+                  "upload refusal lacks Allow-Origin *")
+        # Clean up through the fixture, then confirm the link is gone.
+        self.tool("delete_release", {"token": view["token"]})
+        self.releases.discard(view["token"])
+        check(self.request("/" + view["token"] + "/cors.bin", anonymous=True)[0] == 404,
+              "deleted cross-origin release is still served")
 
     @unittest.skipUnless(os.environ.get("FSERVER_TEST_LARGE") == "1",
                          "set FSERVER_TEST_LARGE=1 for the 256 MiB upload")

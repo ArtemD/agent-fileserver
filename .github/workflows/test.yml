@@ -76,6 +76,26 @@ jobs:
       - name: Script syntax
         run: |
           PYTHONPYCACHEPREFIX="$(mktemp -d)" python3 -m py_compile scripts/*.py tests/*.py
+
+  ui:
+    # MCP Apps panels (ui/*.html) driven through a mock host in Chromium.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Playwright and Chromium, outside the checkout
+        run: |
+          npm install --no-save --no-audit --no-fund --prefix "$RUNNER_TEMP/pw" playwright@1.63.0
+          "$RUNNER_TEMP/pw/node_modules/.bin/playwright" install --with-deps chromium
+      - name: Panel browser tests
+        env:
+          NODE_PATH: ${{ runner.temp }}/pw/node_modules
+        run: |
+          for test in tests/ui_*.test.mjs; do
+            node "$test" || exit 1
+          done
           sh -n scripts/exe-dev-up.sh .githooks/commit-msg .githooks/pre-push
       - name: Validate compose files and Caddy configs (proxy and direct)
         env:

@@ -12,7 +12,10 @@ as Docker Compose**: an official Caddy container serves release bytes and routes
 container, which has no network and calls the shared release core in-process.
 Upload tickets are minted only by the `begin_upload` MCP tool; `PUT /_upload`
 is neither a management API nor a form. There is no REST API, web UI, upload
-form, Python client, native installer or CLI publishing. The `admin` compose
+form, Python client, native installer or CLI publishing. Hosts that support
+MCP Apps (Claude) render tool results as panels in the chat; the panels are
+static `ui://` MCP resources embedded in the binary, not pages the server hosts
+and not a management API. The `admin` compose
 service only administers keys (`token create|list|revoke`).
 
 ## Commands
@@ -30,6 +33,9 @@ python3 tests/container_sandbox.py        # live tests against the running stack
 python3 tests/http_acceptance.py
 python3 tests/mcp_live.py
 python3 tests/access_logging.py
+node tests/ui_release.test.mjs            # panel browser tests, no stack needed:
+node tests/ui_releases.test.mjs           # Playwright 1.63.0 + Chromium, NODE_PATH set
+node tests/ui_upload.test.mjs             # (see docs/TESTING.md)
 docker compose down
 ```
 
@@ -43,7 +49,7 @@ themselves. Details: docs/TESTING.md.
 | `CLAUDE.md` | Imports this file so Claude Code loads the same rules |
 | `CHANGELOG.md` | Keep a Changelog record per version; release notes are taken from it |
 | `compose.yaml`, `compose.direct.yaml`, `.env.example` | The deployment: services, hardening, volumes, config |
-| `Dockerfile` | Go service image (UID 10001); Caddy uses the official image |
+| `Dockerfile` | Go service image (UID 10001), also copies `ui/` for the embed; Caddy uses the official image |
 | `deploy/caddy/` | `Caddyfile.proxy`, `Caddyfile.direct`, shared `routes.caddy` |
 | `scripts/exe-dev-up.sh` | One-shot setup on an exe.dev VM |
 | `scripts/check_consistency.py` | CI guard for drift, hardening, forbidden files and doc links |
@@ -56,7 +62,11 @@ themselves. Details: docs/TESTING.md.
 | `api.go` | Auth, rate limits, in-process release core, Caddy `forward_auth` endpoint (also refuses expired releases), expiry sweeper |
 | `publish.go`, `archive*.go`, `security.go` | Publisher (new release and in-place update), archive extraction, keys, policies |
 | `errors.go` | Error responses: stable error strings plus a next-step `hint` for every one |
+| `ui.go` | MCP Apps: embeds `ui/`, links tools to panels with `_meta.ui`, registers the `ui://agent-fileserver/*` resources |
+| `ui/` | Panel sources: `release.html`, `releases.html`, `upload.html`, shared `bridge.js` (MCP Apps client) and `base.css`; inlined at start |
+| `ui_test.go` | Go tests for the panel resources, tool metadata, composition, `upload_from_computer` and `/_upload` CORS |
 | `tests/` | Live tests against a running stack |
+| `tests/ui_host.mjs`, `tests/ui_*.test.mjs` | Mock MCP Apps host and the browser tests of the three panels (Playwright, Chromium) |
 | `docs/` | MCP, architecture/security, install/operations, testing |
 
 ## Definition of done (mandatory for every change)
@@ -104,8 +114,13 @@ A change is not finished until **all** of these are updated in the same commit:
 **Always**
 - MCP stays the only management interface. New capabilities are MCP tools that
   call the shared core in-process; Caddy routes only `/mcp` and the
-  ticket-only `PUT /_upload`. Upload tickets are minted only by the
-  `begin_upload` MCP tool.
+  ticket-only `PUT /_upload` (with its CORS preflight). Upload tickets are
+  minted only by the `begin_upload` MCP tool. `/_upload` answers CORS for any
+  origin because the ticket is its only credential; `/mcp` gets no CORS and
+  keeps its exact `Origin` check.
+- Panels render tool data as text only (no `innerHTML`, `eval` or inline event
+  attributes), use a URL only when it is under the base URL, load nothing
+  external, and act only by calling existing tools through the host.
 - Fail closed: a missing or invalid access policy denies access; reject
   traversal, links, special files, secrets and limit violations.
 - Redact secrets: never log request bodies, passwords, uploaded content, raw MCP

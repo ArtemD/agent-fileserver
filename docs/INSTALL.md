@@ -104,7 +104,7 @@ the key registry read-only, so a compromised service cannot mint keys.
 
 | Item | Purpose |
 |---|---|
-| `api` container (`agent-fileserver:local`, UID 10001) | MCP service; **no network**, private Unix socket only |
+| `api` container (`agent-fileserver:local`, UID 10001) | MCP service; **no network**, private Unix socket only. The MCP Apps panels (`ui/`) are embedded in its binary, so there is nothing extra to deploy or mount |
 | `caddy` container (`caddy:2.11.7-alpine`, UID 10002) | Public edge; serves `data/public` read-only, routes only `/mcp` and the ticket-only `PUT /_upload` |
 | `admin` (profile, on demand) | Key administration; no network |
 | `init` (one-shot) | Creates host directories with the right owners, then exits |
@@ -117,6 +117,32 @@ All long-running containers have a read-only root filesystem, drop all Linux
 capabilities (Caddy keeps only the one its official binary needs to start), set
 no-new-privileges, restart `unless-stopped` and have health checks. Docker logs
 rotate at 10 MB × 5 per container.
+
+## Panels in the chat
+
+Claude (web and desktop; mobile shows them too) displays an interactive panel
+for some tools: a release card, a releases dashboard and an upload panel
+(`upload_from_computer`). There is nothing to enable: the panels ship inside the
+`api` image (the Dockerfile copies `ui/` for the Go embed) and are served as MCP
+resources, so a rebuild (`docker compose up -d --build --wait`) is the upgrade.
+Each user is asked once in Claude to allow the app.
+
+Operator notes:
+
+- The panels use the base URL from `FSERVER_DOMAIN` (`https://FSERVER_DOMAIN`).
+  Buttons only open and copy links under it, and the upload panel may send
+  data only to that origin. After you change the domain, restart so the panels
+  pick it up.
+- The upload panel sends the file straight to `PUT /_upload` from the chat
+  host's origin (Claude: `*.claudemcpcontent.com`, other hosts maybe `null`), so
+  `/_upload` answers CORS for any origin. The ticket, minted by an
+  authenticated MCP call, is the only credential; `/mcp` stays strict. Details:
+  [security model](ARCHITECTURE.md#cors-on-_upload).
+- If an upload from the panel fails while `curl` with a ticket works, check that
+  your HTTPS frontend forwards `OPTIONS /_upload` to Caddy and does not add its
+  own CORS policy or body-size limit (see the note on upload limits above).
+- No panel is shown by clients without MCP Apps; they use the text results and
+  `begin_upload`, exactly as before.
 
 ## Expiry
 
@@ -158,6 +184,12 @@ Releases are published only after the full test suite passes on the tag; each
 lists its commits and the issues they closed.
 
 Data, keys and passwords live in the data directory and survive rebuilds.
+
+**Upgrading to the release with panels:** a new tool, `upload_from_computer`,
+and three `ui://` resources appear; the server now also declares the
+`resources` capability. `/_upload` now answers CORS preflights and no longer
+refuses a foreign `Origin` (the ticket is still required). Rebuild the image;
+no data or configuration changes are needed.
 
 **Upgrading to the release with expiry:** existing releases have no expiry and
 keep living; nothing is deleted on upgrade. Only releases published afterwards

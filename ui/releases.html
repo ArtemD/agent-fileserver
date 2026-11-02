@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Releases dashboard</title>
+<style>/*FSERVER:BASE_CSS*/</style>
+<style>
+  body { padding: 12px; }
+  .head { margin: 0 0 8px; font-weight: 600; }
+  .note { margin: 0 0 8px; }
+  .controls { margin: 0 0 8px; }
+  .controls input { flex: 1 1 200px; min-width: 120px; }
+  .tablewrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; font-weight: 600; font-size: 12px; color: var(--fs-text-2); padding: 4px 8px; border-bottom: 1px solid var(--fs-border); white-space: nowrap; }
+  td { padding: 6px 8px; border-bottom: 1px solid var(--fs-border); vertical-align: top; }
+  td.num, th.num { text-align: right; white-space: nowrap; }
+  td.nowrap { white-space: nowrap; }
+  .name { font-weight: 600; word-break: break-word; }
+  .tok { font-size: 12px; }
+  .small { font-size: 12px; }
+  .actions { display: flex; gap: 4px; flex-wrap: wrap; }
+  .actions button { padding: 2px 8px; font-size: 13px; }
+  .rowerr { margin-top: 4px; }
+  button.danger.confirm { background: var(--fs-danger); border-color: var(--fs-danger); color: #fff; }
+</style></head>
+<body>
+<main id="app">
+  <p id="status" class="muted">Waiting for the result…</p>
+  <div id="main" hidden>
+    <p id="head" class="head"></p>
+    <p id="trunc" class="note muted" hidden>Showing the newest 1,000</p>
+    <div class="row controls" id="controls">
+      <input id="filter" type="search" placeholder="Filter by name, token or link" aria-label="Filter releases" autocomplete="off">
+      <select id="sort" aria-label="Sort releases">
+        <option value="newest">Newest</option>
+        <option value="largest">Largest</option>
+        <option value="expiring">Expiring soonest</option>
+      </select>
+    </div>
+    <p id="empty" class="muted" hidden></p>
+    <div class="tablewrap" id="tablewrap">
+      <table>
+        <thead><tr><th>Name</th><th class="num">Size</th><th>Access</th><th>Date</th><th>Expires</th><th>Actions</th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+  </div>
+</main>
+<script>/*FSERVER:BRIDGE*/</script>
+<script>
+(function () {
+  "use strict";
+  var f = window.fserver;
+  var el = f.el;
+  var CONFIRM_MS = 5000;
+  var $ = function (id) { return document.getElementById(id); };
+
+  var entries = [];          // one entry per release: {r, tr, hay, ts, ...}
+  var totals = { count: 0, bytes: 0, expiring: 0, truncated: false };
+  var haveResult = false;
+
+  function plural(n, one, many) { return n + " " + (n === 1 ? one : many); }
+
+  function isExpiring(r) {
+    if (!r || !r.expires_at) { return false; }
+    var d = f.daysLeft(r.expires_at);
+    return d !== null && d <= 7;
+  }
+  function nameOf(r) { return f.releaseName(r) || r.token || ""; }
+  function timeOf(iso) { var t = iso ? new Date(iso).getTime() : NaN; return isNaN(t) ? 0 : t; }
+
+  function setEntry(e, r) {
+    e.r = r;
+    e.ts = timeOf(r.updated_at || r.created_at);
+    var t = r.expires_at ? new Date(r.expires_at).getTime() : NaN;
+    e.exp = isNaN(t) ? Infinity : t;
+    e.hay = [r.label, r.original_filename, r.source_basename, r.token, r.url]
+      .filter(function (x) { return typeof x === "string"; }).join("\n").toLowerCase();
+  }
+
+  function showError(data) {
+    var s = $("status");
+    s.className = "error";
+    s.replaceChildren(el("div", null, el("div", null, String(data.error || "Something went wrong")),
+      data.hint ? el("div", { class: "hint" }, String(data.hint)) : null));
+    s.hidden = false;
+    $("main").hidden = true;
+    f.resize();
+  }
+
+  // ----- rows -----
+  function expiryCell(r) {
+    if (!r.expires_at) { return el("span", { class: "muted" }, "Never"); }
+    var d = f.daysLeft(r.expires_at);
+    if (d === null) { return el("span", { class: "muted" }, "Never"); }
+    if (d <= 0) { return el("span", { class: "badge danger" }, "Expired"); }
+    var text = plural(d, "day", "days");
+    return el("span", { class: "badge" + (d <= 7 ? " warn" : "") }, text);
+  }
+
+  function fill(e) {
+    var r = e.r;
+    var tr = e.tr;
+    var safe = f.safeURL(r.url);
+    function btn(label, cls, handler) {
+      return el("button", { type: "button", class: cls || null, disabled: e.busy, onclick: handler }, label);
+    }
+    var actions = el("div", { class: "actions" });
+    if (safe) {
+      actions.appendChild(btn("Open", null, function () { onOpen(e); }));
+      actions.appendChild(btn(e.copied ? "Copied" : "Copy", null, function () { onCopy(e); }));
+    } else {
+      actions.appendChild(el("span", { class: "muted small" }, "link withheld"));
+    }
+    if (r.expires_at) { actions.appendChild(btn("Keep forever", null, function () { onKeep(e); })); }
+    actions.appendChild(btn(e.confirming ? "Confirm delete" : "Delete", e.confirming ? "danger confirm" : "danger", function () { onDelete(e); }));
+
+    var nameCell = el("td", null,
+      el("div", { class: "name" }, nameOf(r)),
+      el("div", { class: "tok muted mono" }, r.token || ""));
+    if (e.err) {
+      nameCell.appendChild(el("div", { class: "rowerr" },
+        el("div", { class: "error small" }, String(e.err.error || "Something went wrong")),
+        e.err.hint ? el("div", { class: "hint" }, String(e.err.hint)) : null));
+    }
+    var when = r.updated_at ? "Updated" : "Created";
+    var dateStr = f.fmtDate(r.updated_at || r.created_at);
+    tr.replaceChildren(
+      nameCell,
+      el("td", { class: "num" }, f.fmtBytes(r.bytes)),
+      el("td", null, el("span", { class: "badge" + (r.protected ? " ok" : "") }, r.protected ? "Password" : "Public")),
+      el("td", { class: "nowrap" }, dateStr ? el("span", null, el("span", { class: "muted small" }, when + " "), dateStr) : ""),
+      el("td", { class: "nowrap" }, expiryCell(r)),
+      el("td", null, actions));
+  }
+
+  function makeEntry(r) {
+    var e = { r: null, tr: el("tr", { "data-token": r.token || "" }), busy: false, confirming: false, timer: 0, err: null, copied: false };
+    setEntry(e, r);
+    fill(e);
+    return e;
+  }
+
+  // ----- header and view -----
+  function renderHead() {
+    var parts = [plural(totals.count, "release", "releases"), f.fmtBytes(totals.bytes) + " in total"];
+    parts.push(totals.expiring + " expiring within 7 days");
+    $("head").textContent = parts.join(" · ");
+    $("trunc").hidden = !totals.truncated;
+  }
+
+  function applyView() {
+    var q = $("filter").value.trim().toLowerCase();
+    var mode = $("sort").value;
+    var list = q ? entries.filter(function (e) { return e.hay.indexOf(q) !== -1; }) : entries.slice();
+    if (mode === "largest") {
+      list.sort(function (a, b) { return (b.r.bytes || 0) - (a.r.bytes || 0); });
+    } else if (mode === "expiring") {
+      list.sort(function (a, b) {
+        if (a.exp === b.exp) { return 0; }
+        return a.exp < b.exp ? -1 : 1;   // Infinity (never) sorts last
+      });
+    } else {
+      list.sort(function (a, b) { return b.ts - a.ts; });
+    }
+    var rows = $("rows");
+    rows.replaceChildren.apply(rows, list.map(function (e) { return e.tr; }));
+    var empty = $("empty");
+    if (entries.length === 0) { empty.textContent = "No releases yet."; }
+    else if (list.length === 0) { empty.textContent = "No releases match the filter."; }
+    empty.hidden = list.length !== 0;
+    $("tablewrap").hidden = list.length === 0;
+    $("controls").hidden = entries.length === 0;
+    f.resize();
+  }
+
+  // ----- actions -----
+  function setBusy(e, on) { e.busy = on; fill(e); }
+
+  function onOpen(e) {
+    f.openLink(e.r.url).catch(function () {
+      e.err = { error: "Could not open the link", hint: "Copy the link and open it in a browser." };
+      fill(e);
+    });
+  }
+  function onCopy(e) {
+    f.copy(e.r.url).then(function (ok) {
+      if (!ok) {
+        e.err = { error: "Could not copy the link", hint: "Select the link and copy it by hand." };
+      } else {
+        e.err = null;
+        e.copied = true;
+        setTimeout(function () { e.copied = false; fill(e); }, 1500);
+      }
+      fill(e);
+    });
+  }
+
+  function adjust(oldR, newR) {
+    // newR null means removed.
+    totals.bytes = Math.max(0, totals.bytes - (oldR.bytes || 0) + (newR ? (newR.bytes || 0) : 0));
+    if (!newR) { totals.count = Math.max(0, totals.count - 1); }
+    var delta = (newR && isExpiring(newR) ? 1 : 0) - (isExpiring(oldR) ? 1 : 0);
+    totals.expiring = Math.max(0, totals.expiring + delta);
+  }
+
+  function onKeep(e) {
+    var token = e.r.token;
+    e.err = null;
+    setBusy(e, true);
+    f.call("set_expiry", { token: token, expires_in_days: 0 }).then(function (res) {
+      e.busy = false;
+      if (res.isError || !res.data || res.data.token !== token) {
+        e.err = res.data && res.data.error ? res.data : { error: "Unexpected reply from the server", hint: "Refresh the list with list_releases and check the release." };
+        fill(e);
+        return;
+      }
+      var old = e.r;
+      adjust(old, res.data);
+      setEntry(e, res.data);
+      fill(e);
+      renderHead();
+      applyView();
+    }, function (err) {
+      e.busy = false;
+      e.err = { error: "The request failed", hint: "Try again in a moment." };
+      fill(e);
+    });
+  }
+
+  function onDelete(e) {
+    if (!e.confirming) {
+      e.confirming = true;
+      e.timer = setTimeout(function () { e.timer = 0; e.confirming = false; fill(e); }, CONFIRM_MS);
+      fill(e);
+      return;
+    }
+    clearTimeout(e.timer);
+    e.timer = 0;
+    e.confirming = false;
+    e.err = null;
+    var token = e.r.token;
+    setBusy(e, true);
+    f.call("delete_release", { token: token }).then(function (res) {
+      e.busy = false;
+      if (res.isError || !res.data || res.data.ok !== true) {
+        e.err = res.data && res.data.error ? res.data : { error: "Unexpected reply from the server", hint: "Refresh the list with list_releases and check the release." };
+        fill(e);
+        return;
+      }
+      adjust(e.r, null);
+      entries = entries.filter(function (x) { return x !== e; });
+      renderHead();
+      applyView();
+      f.updateContext("Deleted release " + token);
+    }, function () {
+      e.busy = false;
+      e.err = { error: "The request failed", hint: "Try again in a moment. Deleting is safe to repeat." };
+      fill(e);
+    });
+  }
+
+  // ----- results -----
+  function onResult(result) {
+    var p = f.parseResult(result);
+    var data = p.data;
+    if (p.isError) { showError(data); return; }
+    var list, t;
+    if (Array.isArray(data)) {
+      list = data;
+      t = {};
+    } else if (data && Array.isArray(data.releases)) {
+      list = data.releases;
+      t = data;
+    } else {
+      showError({ error: "Unexpected result", hint: "Run list_releases again." });
+      return;
+    }
+    entries.forEach(function (e) { if (e.timer) { clearTimeout(e.timer); } });
+    list = list.filter(function (r) { return r && typeof r === "object"; });
+    entries = list.map(makeEntry);
+    var bytes = 0, expiring = 0;
+    list.forEach(function (r) { bytes += r.bytes || 0; if (isExpiring(r)) { expiring++; } });
+    totals = {
+      count: typeof t.count === "number" ? t.count : list.length,
+      bytes: typeof t.total_bytes === "number" ? t.total_bytes : bytes,
+      expiring: typeof t.expiring_within_7_days === "number" ? t.expiring_within_7_days : expiring,
+      truncated: t.truncated === true
+    };
+    haveResult = true;
+    $("status").hidden = true;
+    $("main").hidden = false;
+    renderHead();
+    applyView();
+  }
+
+  $("filter").addEventListener("input", applyView);
+  $("sort").addEventListener("change", applyView);
+  f.onToolResult(onResult);
+  f.onToolCancelled(function () {
+    if (!haveResult) {
+      var s = $("status");
+      s.className = "muted";
+      s.textContent = "The request was cancelled.";
+    }
+  });
+  f.ready.then(function () { f.resize(); });
+})();
+</script>
+</body></html>

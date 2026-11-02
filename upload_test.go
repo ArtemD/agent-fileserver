@@ -357,8 +357,14 @@ func TestUploadOriginMethodAndPath(t *testing.T) {
 	auth := []string{v.Headers["Authorization"]}
 	n := int64(len(data))
 
-	w := f.put(bytes.NewReader(data), putOpts{auth: auth, length: n, extra: map[string]string{"Origin": "https://evil.example"}})
-	assertAPIStatus(t, w, 403)
+	// CORS preflight from an MCP Apps iframe origin: answered without a
+	// ticket and without consuming one; never with credentials.
+	w := f.put(nil, putOpts{method: "OPTIONS", length: 0, extra: map[string]string{"Origin": "https://0123abcd.claudemcpcontent.com",
+		"Access-Control-Request-Method": "PUT", "Access-Control-Request-Headers": "authorization, content-type"}})
+	if w.Code != 204 || w.Header().Get("Access-Control-Allow-Origin") != "*" || w.Header().Get("Access-Control-Allow-Methods") != "PUT" ||
+		w.Header().Get("Access-Control-Allow-Headers") != "Authorization, Content-Type" || w.Header().Get("Access-Control-Allow-Credentials") != "" {
+		t.Fatalf("preflight: %d %v", w.Code, w.Header())
+	}
 	for _, m := range []string{"GET", "POST", "DELETE", "HEAD"} {
 		w = f.put(nil, putOpts{auth: auth, method: m, length: 0})
 		if m == "HEAD" {
@@ -368,7 +374,7 @@ func TestUploadOriginMethodAndPath(t *testing.T) {
 		} else {
 			assertAPIStatus(t, w, 405)
 		}
-		if w.Header().Get("Allow") != "PUT" {
+		if w.Header().Get("Allow") != "PUT, OPTIONS" {
 			t.Fatalf("%s Allow=%q", m, w.Header().Get("Allow"))
 		}
 	}
@@ -378,8 +384,12 @@ func TestUploadOriginMethodAndPath(t *testing.T) {
 			t.Fatalf("%s: %d %s", target, w.Code, w.Body)
 		}
 	}
-	// Same-origin Origin is allowed, and the ticket survived all of the above.
-	w = f.put(bytes.NewReader(data), putOpts{auth: auth, length: n, extra: map[string]string{"Origin": "https://example.test"}})
+	// Any origin may present the ticket (the ticket is the credential), and
+	// the ticket survived all of the above.
+	w = f.put(bytes.NewReader(data), putOpts{auth: auth, length: n, extra: map[string]string{"Origin": "null"}})
+	if w.Header().Get("Access-Control-Allow-Origin") != "*" || w.Header().Get("Access-Control-Allow-Credentials") != "" {
+		t.Fatalf("cross-origin PUT headers: %v", w.Header())
+	}
 	releaseOf(t, w)
 }
 

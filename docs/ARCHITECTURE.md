@@ -119,7 +119,8 @@ or tool-argument limits.
 MCP JSON cannot carry large files, so a second Caddy route, `PUT /_upload`,
 goes to the same Unix socket. It is not a management API, a form or a second
 publisher: the handler checks a ticket and hands the bytes to the same
-in-process release core as MCP. Every other path and method is refused.
+in-process release core as MCP. Every other path is refused, and so is every
+method except `PUT` and the CORS preflight `OPTIONS` (below).
 
 Tickets are minted only by the `begin_upload` MCP tool, so only a holder of a
 management key can obtain one.
@@ -143,12 +144,62 @@ management key can obtain one.
 | Slow or stalled clients | One upload at a time; at most 60 minutes to send the body and 15 minutes to publish; at most 8 pending tickets |
 | Leakage | Ticket only in the `Authorization` header, which Caddy redacts from the access log; never in a URL, audit log or tool result beyond the one that mints it; short life and single use limit the damage of a leak |
 | Confusion between credentials | Separate formats and routes: tickets are refused on `/mcp`, management keys on `/_upload` |
-| Browsers and CORS | A cross-origin `Origin` header gets 403; no CORS headers are sent anywhere, and the ticket is a header a page cannot attach to a simple request |
+| Browsers and CORS | `/_upload` answers CORS for any origin (see below): the ticket is the only credential and there are no cookies, so a page gains nothing `curl` with the same ticket would not. `/mcp` sends no CORS headers and keeps its strict `Origin` check |
 | Corrupt or hostile content | Same validation as MCP publishing: traversal, links, special files, secrets and resource limits are rejected; ZIP is limited to 65,534 entries and has no ZIP64 |
 | Duplicate publishes on retry | The idempotency key from `begin_upload` is honoured: a repeat returns the earlier release, a changed payload conflicts (409) |
 
 The API container still has `network_mode: none`: it never fetches URLs, and the
 upload arrives through the Unix socket like MCP does.
+
+### CORS on `/_upload`
+
+The upload panel (below) runs in an iframe on an origin the chat host picks:
+`*.claudemcpcontent.com` in Claude, possibly the opaque origin `null` in other
+hosts. It must send the file to `/_upload` from there, so `/_upload` no longer
+refuses foreign origins. This is a deliberate change to the model:
+
+- `OPTIONS /_upload` answers 204 with `Access-Control-Allow-Origin: *`,
+  `Access-Control-Allow-Methods: PUT`,
+  `Access-Control-Allow-Headers: Authorization, Content-Type` and
+  `Access-Control-Max-Age: 600`. Every other `/_upload` response carries
+  `Access-Control-Allow-Origin: *` and exposes `X-Request-ID` and `Retry-After`.
+  `Access-Control-Allow-Credentials` is never sent.
+- The single-use, 30-minute ticket, bound to one size and SHA-256 and minted only
+  by an authenticated MCP call, is the only credential. No cookie or other
+  ambient authority exists on this route, so a page that holds a ticket can do
+  exactly what `curl` with that ticket can do, and a page without one can do
+  nothing. Failed ticket guesses still count towards the per-IP limit.
+- Management keys remain refused on `/_upload`, tickets remain refused on `/mcp`,
+  and `/mcp` keeps its exact-origin check and sends no CORS headers, so a web
+  page can never call the management interface.
+
+## MCP Apps panels
+
+For hosts that support the MCP Apps extension (protocol `2026-01-26`) the server
+exposes three `ui://agent-fileserver/…` resources (release card, releases
+dashboard, upload panel) and links tools to them with `_meta.ui.resourceUri`.
+This adds no route and no management surface: a panel is data returned over
+`/mcp` that the host renders in a sandboxed iframe. Other clients ignore it.
+
+- The panels are static files in `ui/`, embedded in the binary. At start the
+  shared client and styles are inlined and the configured base URL is injected
+  JSON-encoded, so it cannot end the script element. Nothing from a request,
+  a release or the filesystem is ever put into a panel's source.
+- A panel talks only to the host over `postMessage`. Its buttons call existing
+  MCP tools through the host with the user's connector key, so authentication,
+  audit, rate limits and validation are the same as for an agent's call. The key
+  never enters the panel.
+- Panels render tool data as text only (no `innerHTML`, no `eval`, no inline
+  event attributes) and use a URL from a result only when it is under the base
+  URL. No external script, font or image is loaded. The host's sandbox, not the
+  panel, enforces the content security policy.
+- The upload panel's resource declares `csp.connectDomains` with only the origin
+  of the base URL. It hashes the file in the browser, calls `begin_upload`
+  through the host and sends the bytes to `PUT /_upload` with the ticket, which
+  it never displays. `upload_from_computer` itself changes nothing and mints
+  no ticket; it only validates options and shows the panel.
+- Delete in the dashboard needs two clicks, and the host (Claude) asks before it
+  shows an app the first time and before it opens a link.
 
 ## Credentials and privacy
 

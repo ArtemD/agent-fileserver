@@ -42,6 +42,17 @@ core is unreachable as a public route, origin/body/concurrency gates,
 duplicate/case-aliased arguments, whole-envelope structural allocation bombs and
 secret-free audits. Fuzz seed/parser tests run in the default suite.
 
+`ui_test.go` covers the MCP Apps side: the three `ui://agent-fileserver/*`
+resources (MIME type `text/html;profile=mcp-app`, `_meta.ui` with
+`prefersBorder`, `clipboardWrite` and the upload panel's `csp.connectDomains`),
+the `resources` capability, `_meta.ui.resourceUri` (and the deprecated flat key)
+on exactly the linked tools, that composing a panel inlines the bridge and
+styles and injects the base URL JSON-encoded, `upload_from_computer` (valid
+options, invalid ones refused with a hint, nothing changed), and the CORS
+behaviour of `/_upload`: the `OPTIONS` preflight, the headers on every response,
+no `Access-Control-Allow-Credentials`, management keys still refused, and
+`/mcp` still strict about `Origin`.
+
 `lifecycle_test.go` covers the release lifecycle: expiry (default and
 `expires_in_days`, `set_expiry`, 404 from the instant of expiry before the
 sweeper, the sweeper's re-check under the lock, legacy manifests that never expire), update in place (token and URL kept,
@@ -106,17 +117,69 @@ key. Shared helper: `tests/mcp_fixture.py`.
   `X-Auth-Token` and an upload ticket in `Authorization`) and, over public
   HTTPS, that a caller cannot forge its IP via `X-Forwarded-For`. It reads `logs/access.json` with sudo (`FSERVER_TEST_LOG`).
 
+- `mcp_live.py` also checks the panels over Caddy: `resources/list` and
+  `resources/read` for the three `ui://` resources with their metadata, the
+  `_meta.ui.resourceUri` on the linked tools, `upload_from_computer` (valid and
+  invalid options), and CORS on `/_upload` through the real edge: a preflight
+  `OPTIONS` answered without a ticket, and a cross-origin `PUT` with a ticket
+  (`Origin` set to a foreign value) that publishes and returns
+  `Access-Control-Allow-Origin: *`, while `/mcp` still sends no CORS headers.
+
 Knobs: `FSERVER_TEST_BASE` (default `http://localhost:8000`) and
 `FSERVER_TEST_RESOLVE=HOST:443:PUBLIC_IP`, which makes curl use the real public
 edge when local DNS resolves an internal shortcut. TLS verification stays on;
 never use `-k`.
+
+## Panel browser tests (no running stack needed)
+
+The three MCP Apps panels are tested in a real browser against a mock MCP Apps
+host, `tests/ui_host.mjs`. The mock host opens a panel in a sandboxed iframe
+(`allow-scripts allow-forms`, so an opaque origin like Claude's), answers the
+`ui/initialize` handshake, delivers `tool-input` and `tool-result` notifications,
+answers `tools/call` from the test, and records every message the panel sends.
+HTTP to the server's base URL (`https://files.example.com`) is mocked with
+Playwright routes.
+
+```sh
+npm install --no-save --prefix /tmp/pw playwright@1.63.0
+npx --prefix /tmp/pw playwright install --with-deps chromium
+export NODE_PATH=/tmp/pw/node_modules
+node tests/ui_release.test.mjs      # release card
+node tests/ui_releases.test.mjs     # releases dashboard
+node tests/ui_upload.test.mjs       # upload panel
+```
+
+Each exits non-zero on failure. Playwright is not a project dependency: install
+it outside the repository as above (CI uses `$RUNNER_TEMP/pw`). Use another
+`--prefix` directory if you like, as long as `NODE_PATH` points at its
+`node_modules`.
+
+- `ui_release.test.mjs`: link, access, size and dates, copy and open (including
+  the withheld link when a URL is not under the base URL), the Keep 30 days,
+  1 year and forever buttons calling `set_expiry`, and errors shown with their
+  `hint`.
+- `ui_releases.test.mjs`: totals, filter, sort by newest, largest and expiring,
+  open, copy, keep forever, and delete only after a confirming second click.
+- `ui_upload.test.mjs`: pick or drop a file, SHA-256, the `begin_upload` call
+  with the tool's options, the `PUT` with progress, the shown release, the
+  message to the agent, archives as sites versus *Publish as one file*, and
+  refused or failed uploads.
+- The card and dashboard tests check that tool data is rendered as text (a
+  label containing markup stays inert) and that an unlabelled flat archive is
+  titled "Website"; the upload tests check that the password and the upload
+  ticket never appear in the panel. Every test checks that the panel raises no
+  script errors.
 
 ## CI
 
 `.github/workflows/test.yml` (push to `main`, pull requests, and called by
 releases) runs a **workflows** job (actionlint, with shellcheck on `run:` blocks),
 a **commits** job (`check_commits.py` on the pushed range), the
-unit/static checks on Go 1.26 and 1.27, then an **integration** job that builds
+unit/static checks on Go 1.26 and 1.27, a **ui** job that installs Playwright
+1.63.0 and Chromium outside the checkout
+(`npm install --no-save --prefix "$RUNNER_TEMP/pw" playwright@1.63.0`, then that
+install's `playwright install --with-deps chromium`, with `NODE_PATH` pointing
+there) and runs every `tests/ui_*.test.mjs`, and an **integration** job that builds
 and starts the real compose stack and runs every live test above against it,
 including the 100 MiB MCP upload and the 256 MiB ticket upload. Superseded
 pull-request runs are cancelled; runs for commits on `main` and for tags always
@@ -137,6 +200,10 @@ the issues they closed (a manual run creates the tag on the tested commit). Depl
 - Public DNS, ACME issuance/renewal, firewalls and your HTTPS frontend's limits.
 - Your actual MCP client: connection, tool calls, and how large an argument it
   will really send (often far below the server's 100 MiB limit).
+- The panels in the real host. The mock host follows the MCP Apps spec but is
+  not Claude: whether Claude shows the app, its first-use prompt, the clipboard
+  and open-link confirmation, and the origin it sends from must be tried in
+  Claude by hand (publish, `list_releases`, then ask to upload a file).
 - A full host reboot (Docker must start at boot for `unless-stopped` to apply).
 - Restores from your own backups.
 

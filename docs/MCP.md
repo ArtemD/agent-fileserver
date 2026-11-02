@@ -23,8 +23,13 @@ the repo. Revocation takes effect on subsequent calls; admitted work may complet
 Clients that require OAuth, persistent sessions, legacy SSE or GET event streams
 without POST/JSON support are not compatible. Unauthenticated requests to `/mcp`
 get 401; authenticated non-POST requests get 405.
-Browser-origin requests require the exact configured HTTPS origin (or no Origin);
-no permissive CORS is installed.
+Browser-origin requests to `/mcp` require the exact configured HTTPS origin (or
+no Origin); no CORS is installed there. The one exception to "no CORS" is
+`PUT /_upload`, which a ticket alone authorizes (see
+[Large uploads](#large-uploads)).
+
+The server declares the `tools` and `resources` capabilities. The resources are
+the panel pages described under [Panels (MCP Apps)](#panels-mcp-apps).
 
 ## Publishing
 
@@ -228,9 +233,9 @@ Ticket rules:
   `idempotency_key`, size, SHA-256 and metadata. If the first publish completed,
   the `PUT` returns that same release (201) instead of publishing a duplicate.
 
-`PUT /_upload`: exact path, no query string, only `PUT` (others get 405 with
-`Allow: PUT`). The body is the raw bytes, exactly `size` long, with the declared
-SHA-256. A cross-origin `Origin` header is refused; there is no CORS. One upload
+`PUT /_upload`: exact path, no query string, only `PUT` and the CORS preflight
+`OPTIONS` (others get 405 with `Allow: PUT, OPTIONS`). The body is the raw
+bytes, exactly `size` long, with the declared SHA-256. One upload
 is received at a time, and publishing then waits for any MCP publish in progress.
 The body may take up to 60 minutes to send, and publishing up to 15 minutes more.
 If the connection drops after the body was fully received, publishing still
@@ -241,20 +246,109 @@ completes; check `list_releases` or retry with the same idempotency key.
 | 201 | Published or updated; the body is the release JSON |
 | 400 | Body shorter than declared, SHA-256 mismatch, `unsafe archive entry`, `unsupported archive format` or `malformed archive` (see Errors), or `Content-Length` differs from the declared size |
 | 401 | Ticket missing, unknown, used, expired or revoked, or a management key was sent (`WWW-Authenticate: Bearer`) |
-| 403 | Cross-origin `Origin` |
 | 404 | Another path, a query string, or an update whose `token` release no longer exists (`release not found`) |
-| 405 | Method other than `PUT` |
+| 405 | Method other than `PUT` or `OPTIONS` |
 | 409 | Idempotency key reused with different bytes or metadata, or the earlier outcome is ambiguous |
 | 413 | `Content-Length` larger than declared, or archive limits (size, extracted size, entries) exceeded |
 | 422 | `publisher refused artifact` (hidden files, secrets, links, …), or `spa` without a root `index.html` |
 | 429 | Another upload in progress, too many bad tickets from this IP (10/minute, shared with `/mcp`), or the publish rate limit (30/hour/key) |
 | 507 | Not enough free disk |
 
+CORS on `/_upload`: the upload panel runs in an iframe on an origin the chat host
+chooses (Claude: a `*.claudemcpcontent.com` host; other hosts may send the
+opaque origin `null`), so the endpoint accepts any origin.
+
+- `OPTIONS /_upload` answers 204 with `Access-Control-Allow-Origin: *`,
+  `Access-Control-Allow-Methods: PUT`,
+  `Access-Control-Allow-Headers: Authorization, Content-Type` and
+  `Access-Control-Max-Age: 600`. It needs no ticket and uses none up.
+- Every other `/_upload` response carries `Access-Control-Allow-Origin: *` and
+  `Access-Control-Expose-Headers: X-Request-ID, Retry-After`, so a page can
+  read errors and rate-limit hints.
+- `Access-Control-Allow-Credentials` is never sent.
+- Why this is safe: the single-use, 30-minute ticket, bound to one size and
+  SHA-256 and minted only by an authenticated MCP call, is the only credential.
+  There are no cookies or ambient authority, so CORS lets a page do nothing
+  that `curl` with the same ticket could not. Management keys stay refused on
+  `/_upload`, and `/mcp` keeps its strict `Origin` check and sends no CORS
+  headers.
+
 The `filename` mode publishes one file of any type, for example a video or PDF,
 served with its content type at `/TOKEN/NAME`. For a one-page website too large
 to pass inline, use `filename: "index.html"`: the page is served at `/TOKEN/`,
 which is the reported `url`, with no archive needed. The archive mode needs no
 `filename`.
+
+## Panels (MCP Apps)
+
+Clients that implement the official MCP Apps extension (protocol `2026-01-26`),
+such as Claude on the web and desktop (the mobile app shows them too), render an
+interactive panel in the chat for some tools. Other clients ignore the panels
+and get the same text results as before; no tool depends on a panel.
+
+Each linked tool carries `_meta.ui.resourceUri` (and the deprecated flat
+`ui/resourceUri` key that some hosts still read). The panel is a `resources/read`
+of that `ui://` URI, MIME type `text/html;profile=mcp-app`.
+
+| Resource | Shown for | Content |
+|---|---|---|
+| `ui://agent-fileserver/release.html` | `publish_files`, `publish_archive`, `release_info`, `set_expiry`, `set_password`, `remove_password` | Release card: link with copy and open, access, size, dates, and expiry with *Keep 30 days*, *1 year* and *forever* buttons that call `set_expiry` |
+| `ui://agent-fileserver/releases.html` | `list_releases` | Dashboard: totals, filter, sort by newest, largest or expiring; per row open, copy, keep forever (`set_expiry` with 0) and delete (`delete_release`, after a confirming second click) |
+| `ui://agent-fileserver/upload.html` | `upload_from_computer` | Upload panel: the user drops or picks a file, the panel hashes it with SHA-256, calls `begin_upload` with the tool's options, sends the bytes with `PUT /_upload` and a progress bar, shows the release and tells the agent the URL |
+
+The resources carry `_meta.ui` with `prefersBorder` and the `clipboardWrite`
+permission. The upload panel also declares `csp.connectDomains` with the origin
+of the configured base URL, the only place it may send data. The same metadata
+is on the resource list entry and on the read result.
+
+How the panels work:
+
+- They are static files in `ui/`, embedded in the binary. The shared client
+  (`ui/bridge.js`) and styles (`ui/base.css`) are inlined when the service
+  starts, and the configured base URL is injected JSON-encoded. A panel
+  contains no server path or secret.
+- They render tool data as text only (never as HTML) and use a URL from a result
+  only if it is under the base URL; anything else shows as "link withheld".
+- Their buttons call existing tools through the host, so the same key, audit
+  log, rate limits and checks apply. A panel adds no capability a tool call does
+  not have. Delete needs two clicks.
+- Claude asks the user before it shows an app the first time, and `ui/open-link`
+  shows a confirmation. Claude currently restricts frame domains, so the card
+  has no embedded preview of the site.
+- Very large `list_releases` results (in Claude, over about 150,000 characters)
+  may not hydrate the dashboard. The text result still works.
+
+### upload_from_computer
+
+Shows the upload panel so the **user** can publish a file from their own
+computer that the agent cannot read. It changes nothing by itself: it validates
+its options and returns, and the panel then calls `begin_upload`. It is
+annotated read-only. Elsewhere, where no panel shows, use `begin_upload` from a
+shell.
+
+All arguments are optional and validated like `begin_upload` (unknown fields
+rejected, no nulls):
+
+| Field | Type | Notes |
+|---|---|---|
+| `label` | string | At most 200 characters |
+| `spa` | boolean | Archives only, as for `begin_upload` |
+| `password` | string | Visitor password, 8–72 UTF-8 bytes. Never shown in the panel |
+| `token` | string | Update this existing release in place |
+| `expires_in_days` | integer | 0 to 3650; 0 = never expire |
+
+Result:
+
+```json
+{"status": "upload panel shown", "max_bytes": 1073741824, "next": "The user picks a file in the upload panel …"}
+```
+
+A `.zip`, `.tar`, `.tar.gz` or `.tgz` is published as a website, as with
+`publish_archive`, unless the user ticks *Publish as one file*; any other file
+is published as one file under its own name. The panel keeps `begin_upload`'s
+limits (`max_bytes`) and its idempotency key is generated by the panel. The
+panel tells the agent the URL when done. Invalid arguments return
+`invalid upload_from_computer arguments`.
 
 ## Errors
 
@@ -309,6 +403,8 @@ Lifecycle errors, none of which changes anything:
   `begin_upload` or `set_expiry`. Use `0` for never.
 - `invalid set_expiry arguments`: `set_expiry` takes exactly `token` and
   `expires_in_days`.
+- `invalid upload_from_computer arguments`: it takes only optional `label`, `spa`,
+  `password`, `token` and `expires_in_days`.
 - `could not update release expiry` (500): retry once, then check `release_info`.
 
 Nothing is published when a publish fails for one of these reasons, so fix the
@@ -327,8 +423,11 @@ named entry and retry with the same `idempotency_key`.
 | `reset_password` | `{"token":"RELEASE_TOKEN"}` |
 | `remove_password` | `{"token":"RELEASE_TOKEN"}` |
 | `set_expiry` | `{"token":"RELEASE_TOKEN","expires_in_days":90}`; both required. 1 to 3650 sets the deletion time that many days from now, `0` keeps the release forever |
+| `upload_from_computer` | `{}` or any of `label`, `spa`, `password`, `token`, `expires_in_days`; shows the upload panel, see [Panels](#upload_from_computer) |
 
 `begin_upload` is described under [Large uploads](#large-uploads).
+Panels for `list_releases` and the release tools are described under
+[Panels (MCP Apps)](#panels-mcp-apps).
 
 `set_expiry` returns the release view with the new `expires_at` and a `notice`.
 It replaces the previous expiry, so it can also shorten one. It does not change
@@ -426,4 +525,5 @@ sandbox that can run `curl`, that host can only publish what it can generate as
 text or base64. This server deliberately does not fetch arbitrary URLs or
 execute uploaded helpers. Its one non-MCP write path is `PUT /_upload`, which
 accepts only a short-lived, single-use ticket minted by `begin_upload`; it is
-not a management API.
+not a management API. If the host shows MCP Apps, `upload_from_computer` lets
+the user hand over such a file through the upload panel instead.

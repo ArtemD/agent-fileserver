@@ -80,6 +80,8 @@ var errorHints = map[string]string{
 	"expires_in_days must be an integer from 0 to 3650": "Pass expires_in_days as a whole number of days from now: 1 to 3650 to have the release " +
 		"deleted automatically, or 0 to keep it forever. Leave it out for the server default (default_expiry_days in server_info) " +
 		"or, on an update, to keep the current expiry. Nothing was changed.",
+	"invalid upload_from_computer arguments": "upload_from_computer takes only optional label, spa, password, token and expires_in_days, " +
+		"with the same rules as begin_upload. Nothing was changed.",
 	"invalid set_expiry arguments":     "set_expiry takes exactly token (from list_releases) and expires_in_days (0 to 3650, 0 = never expire). Nothing was changed.",
 	"could not update release expiry":  hintServer + " Call release_info to see the current expires_at.",
 	"method not allowed":               "The HTTP method does not fit this endpoint (see the Allow header). Use the MCP tools, which choose the method for you.",

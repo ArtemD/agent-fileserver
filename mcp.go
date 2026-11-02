@@ -190,12 +190,12 @@ func mcpSchema(properties map[string]any, required ...string) map[string]any {
 	return s
 }
 
-func (a *apiServer) newMCPHandler() http.Handler {
+func (a *apiServer) newMCPHandler() (http.Handler, error) {
 	// Explicit discard loggers: SDK diagnostics can include attacker-controlled
 	// protocol errors. Only the existing structured, body-free API audit is used.
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	server := mcp.NewServer(&mcp.Implementation{Name: "agent-fileserver", Version: buildVersion}, &mcp.ServerOptions{Logger: logger,
-		Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}},
+		Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}, Resources: &mcp.ResourceCapabilities{}},
 		Instructions: "Publish clean static files only. Never pass management bearer keys as tool arguments. Publish retries require the same explicit idempotency_key and bytes. Downloads are inline only, up to 1 MiB; this is not a client file-attachment guarantee. For files too large to pass inline (attachments, big sites, videos), call begin_upload and PUT the raw bytes with the returned curl command. " +
 			"Releases expire and are deleted automatically after default_expiry_days (server_info) unless expires_in_days says otherwise; every result shows expires_at and publish results carry a notice. When the user needs a link to last, pass expires_in_days (0 = never) or call set_expiry, and tell the user when a link will stop working. " +
 			"To change a published site without changing its link, publish again with token set to the existing release."})
@@ -218,7 +218,7 @@ func (a *apiServer) newMCPHandler() http.Handler {
 	lifecycle += " The result shows expires_at and a notice. Pass token to update an existing release in place, keeping its URL."
 	add := func(name, description string, schema any, readOnly, destructive, idempotent bool) {
 		openWorld := name == "publish_files" || name == "publish_archive" || name == "remove_password" || name == "begin_upload"
-		server.AddTool(&mcp.Tool{Name: name, Description: description, InputSchema: schema,
+		server.AddTool(&mcp.Tool{Name: name, Description: description, InputSchema: schema, Meta: uiToolMeta(name),
 			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: readOnly, DestructiveHint: &destructive, IdempotentHint: idempotent, OpenWorldHint: &openWorld}},
 			func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 				return a.mcpCall(ctx, name, req.Params.Arguments), nil
@@ -250,9 +250,15 @@ func (a *apiServer) newMCPHandler() http.Handler {
 		"path": str(), "text": map[string]any{"type": "string", "description": "UTF-8 contents; specify exactly one of text or content_base64."},
 		"content_base64": map[string]any{"type": "string", "contentEncoding": "base64"}}, "path")}
 	add("publish_files", "Publish raw text/base64 files to the PUBLIC INTERNET by default unless a visitor password is supplied. Paths are relative, without dot components, links or secrets. One file publishes as a single file served with its content type at /TOKEN/NAME; a lone index.html is a one-page website at /TOKEN/. Multiple files form a website directory. Explicit idempotency_key required."+lifecycle, mcpSchema(p, "files", "idempotency_key"), false, true, true)
+	up := publish()
+	delete(up, "idempotency_key")
+	add("upload_from_computer", fmt.Sprintf("Open an upload panel in the chat where the USER drops or picks a file from their own computer (up to %d MiB); the panel hashes it, calls begin_upload and sends the bytes, then reports the release URL. Use it when the user wants to publish a local file you cannot read. Only clients that show MCP Apps (such as Claude on web and desktop) display the panel; elsewhere use begin_upload from a shell. A .zip, .tar, .tar.gz or .tgz is published as a website unless the user chooses one file. The arguments are the options for that publish.", a.cfg.MaxUploadBytes>>20)+lifecycle, mcpSchema(up), true, false, true)
+	if err := addUIResources(server, a.s.baseURL); err != nil {
+		return nil, err
+	}
 	return mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{
 		Stateless: true, JSONResponse: true, Logger: logger, MaxRequestBodyBytes: a.mcpBodyLimit(), PropagateRequestCancellation: true,
-	})
+	}), nil
 }
 
 type mcpFile struct {
@@ -444,6 +450,9 @@ func (a *apiServer) mcpCall(ctx context.Context, name string, raw json.RawMessag
 		}
 		b, _ := json.Marshal(args)
 		return mcpAPIResult(a.mcpDispatch(ctx, parent, "POST", "/_api/v1/uploads", bytes.NewReader(b), "application/json", "", mcpOutputBytes))
+	}
+	if name == "upload_from_computer" {
+		return a.mcpUploadPanel(raw)
 	}
 	if name == "set_expiry" {
 		var args struct {
@@ -737,4 +746,29 @@ func (w *archiveBudgetWriter) Write(p []byte) (int, error) {
 	n, err := w.w.Write(p)
 	w.left -= int64(n)
 	return n, err
+}
+
+// mcpUploadPanel validates the options for the upload panel and tells the
+// model what happens next. It changes nothing: the panel itself calls
+// begin_upload with these options once the user picks a file.
+func (a *apiServer) mcpUploadPanel(raw json.RawMessage) *mcp.CallToolResult {
+	var args struct {
+		Label         string `json:"label,omitempty"`
+		SPA           bool   `json:"spa,omitempty"`
+		Password      string `json:"password,omitempty"`
+		Token         string `json:"token,omitempty"`
+		ExpiresInDays *int   `json:"expires_in_days,omitempty"`
+	}
+	if mcpDecode(raw, &args) != nil || !apiValidLabel(args.Label) {
+		return mcpFailure("invalid upload_from_computer arguments")
+	}
+	if _, err := makeAccessPolicy(args.Password); err != nil {
+		return mcpFailure("password must be 8 to 72 UTF-8 bytes without control characters")
+	}
+	if status, msg := a.checkLifecycle(uploadMetadata{Token: args.Token, ExpiresInDays: args.ExpiresInDays}); status != 0 {
+		return mcpFailure(msg)
+	}
+	return mcpResult(map[string]any{"status": "upload panel shown", "max_bytes": a.cfg.MaxUploadBytes,
+		"next": "The user picks a file in the upload panel in the chat. The panel publishes it with begin_upload and reports the release URL to you when it is done. " +
+			"If the user says no panel is visible, their client does not show MCP Apps: publish with begin_upload from a shell instead."}, false)
 }

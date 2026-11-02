@@ -140,7 +140,11 @@ func newAPIServer(s *store, tokens *tokenStore, cfg apiConfig) (*apiServer, erro
 	}
 	a.mcpAdmission = make(chan struct{}, 1)
 	a.mcpSmallAdmission = make(chan struct{}, mcpSmallSlots)
-	a.mcpHandler = a.newMCPHandler()
+	handler, err := a.newMCPHandler()
+	if err != nil {
+		return nil, err
+	}
+	a.mcpHandler = handler
 	return a, nil
 }
 func (a *apiServer) cleanup(now time.Time) error {

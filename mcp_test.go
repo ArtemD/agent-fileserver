@@ -89,7 +89,7 @@ func TestMCPInitializeDiscoveryAndAnnotations(t *testing.T) {
 			} `json:"tools"`
 		} `json:"result"`
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &list); err != nil || w.Code != 200 || len(list.Result.Tools) != 12 {
+	if err := json.Unmarshal(w.Body.Bytes(), &list); err != nil || w.Code != 200 || len(list.Result.Tools) != 13 {
 		t.Fatalf("tools: %d %s (%v)", w.Code, w.Body, err)
 	}
 	for _, tool := range list.Result.Tools {
@@ -138,7 +138,7 @@ func TestMCPOfficialSDKClientAndRevocation(t *testing.T) {
 	}
 	defer session.Close()
 	tools, err := session.ListTools(ctx, nil)
-	if err != nil || len(tools.Tools) != 12 {
+	if err != nil || len(tools.Tools) != 13 {
 		t.Fatalf("SDK ListTools: %v", err)
 	}
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "server_info", Arguments: map[string]any{}})
@@ -538,7 +538,11 @@ func TestMCPLargeArchive(t *testing.T) {
 	f := testAPI(t)
 	f.a.cfg.MaxUploadBytes = mcpMaxArchiveBytes
 	f.a.cfg.MaxExtractBytes = mcpMaxArchiveBytes
-	f.a.mcpHandler = f.a.newMCPHandler()
+	handler, err := f.a.newMCPHandler()
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.a.mcpHandler = handler
 	// Exact 100 MiB tar: one regular file plus its 512-byte header and 1024-byte
 	// trailer. This tests decoded size, not a tiny compressed stand-in.
 	archive := fixtureTar(t, tarFixture{"large.pdf", 0, strings.Repeat("a", mcpMaxArchiveBytes-1536), nil})
