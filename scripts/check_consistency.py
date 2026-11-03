@@ -111,6 +111,31 @@ for path in tracked():
             if re.search(r"token create\b.*--label|\"create\", \"--label\"", line) and "--account" not in nearby:
                 fail(f"{path}: token create without --account: {line.strip()[:120]}")
 
+# 2d. Upgrades stay current (AGENTS.md, Definition of done 2). From 0.5.0 on,
+# a changelog entry that tells operators or clients to act links the upgrade
+# notes; every note names a version that is released or is the next one; agents
+# are pointed at the procedure.
+changelog, install = read("CHANGELOG.md"), read("docs/INSTALL.md")
+released = [tuple(map(int, v)) for v in re.findall(r"^## \[(\d+)\.(\d+)\.(\d+)\]", changelog, re.M)]
+for head, body in re.findall(r"^## \[([^\]]+)\][^\n]*\n(.*?)(?=^## \[|\Z)", changelog, re.M | re.S):
+    version = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", head)
+    if head != "Unreleased" and (not version or tuple(map(int, version.groups())) < (0, 5, 0)):
+        continue
+    for entry in re.split(r"^- ", body, flags=re.M)[1:]:
+        if re.search(r"\b(?:Operators|Clients):", entry) and "docs/INSTALL.md#upgrades" not in entry:
+            fail(f"CHANGELOG [{head}]: an entry asks operators or clients to act but does not link docs/INSTALL.md#upgrades: {entry.strip()[:80]}")
+if "## Upgrades" not in install:
+    fail("docs/INSTALL.md lost its ## Upgrades section")
+for note in re.findall(r"^\*\*Upgrading to the release with ([^*]*)\*\*", install, re.M):
+    found = re.search(r"\((\d+)\.(\d+)\.(\d+)\):$", note)
+    if not found:
+        fail(f"docs/INSTALL.md upgrade note does not name its version as (X.Y.Z): {note[:60]}")
+    elif released and tuple(map(int, found.groups())) not in released \
+            and tuple(map(int, found.groups())) <= max(released):
+        fail(f"docs/INSTALL.md upgrade note names {'.'.join(found.groups())}, which is not a release in CHANGELOG.md")
+if "docs/INSTALL.md#upgrades" not in read("AGENTS.md"):
+    fail("AGENTS.md must point agents at the upgrade procedure (docs/INSTALL.md#upgrades)")
+
 # 3. Removed interfaces stay removed: MCP is the only management interface.
 docs = [p for p in tracked() if p.endswith(".md")] + ["deploy/caddy/routes.caddy", "compose.yaml", ".env.example"]
 for path in docs:

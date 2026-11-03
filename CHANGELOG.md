@@ -29,7 +29,10 @@ Each release on GitHub also lists every commit and the issues it closed.
 - `token create` requires `--account NAME`. Operators: add `--account owner`
   to scripts that create your own keys, and use a new account name for anyone
   else. Existing keys and releases are in account `owner` and keep working
-  with no migration; nothing changes for clients
+  with no migration; nothing changes for clients. If someone else already has
+  a key, it is in `owner` and still manages your releases: give them a key in
+  their own account and revoke the old one. Steps, checks and rollback:
+  [Upgrading to the release with accounts](docs/INSTALL.md#upgrades)
   ([#32](https://github.com/ArtemD/agent-fileserver/issues/32)).
 
 ## [0.4.2] - 2026-11-03

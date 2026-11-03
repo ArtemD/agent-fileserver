@@ -80,7 +80,9 @@ key privately (not in chat). Their `list_releases` shows only their releases;
 `set_expiry` and updates with `token` answer `release not found` for yours,
 exactly as for a token that does not exist. Several keys can share an account
 (one per device); revoking one leaves the account's releases in place. Account
-names are 1 to 64 lowercase letters, digits, `.`, `_` or `-`.
+names are 1 to 64 lowercase letters, digits, `.`, `_` or `-`. Upgrading an
+install from before accounts (0.4.x): follow
+[the migration steps](docs/INSTALL.md#upgrades).
 
 Accounts separate management, not visitors: a release link still works for
 anyone who has it, and every release is served from the same hostname, so a

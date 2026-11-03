@@ -92,6 +92,14 @@ A change is not finished until **all** of these are updated in the same commit:
    users, operators or agents can notice also gets a line under `## [Unreleased]`
    in `CHANGELOG.md` (Added, Changed, Deprecated, Removed, Fixed, Security), with
    its issue link; say what to do when a client or operator must act.
+   **Upgrades stay current.** A change an operator or client must act on, or one
+   that changes data, keys or what existing credentials can do, gets an
+   `**Upgrading to the release with … (X.Y.Z):**` note in docs/INSTALL.md
+   [Upgrades](docs/INSTALL.md#upgrades): what to do, in order, how to check it
+   worked and how to roll back. Its CHANGELOG line starts the action with
+   `Operators:` or `Clients:` and links `docs/INSTALL.md#upgrades`. When a later
+   change alters an upgrade path, update the existing note too.
+   `check_consistency.py` enforces the link and the note's version.
 3. **CI/CD.** `.github/workflows/test.yml` runs every automated check and every
    live test against the real compose stack; add new ones there. `security.yml`
    scans dependencies and code; `release.yml` publishes a `vX.Y.Z` tag only after
@@ -165,6 +173,19 @@ set `FSERVER_DOMAIN` and `FSERVER_MODE`, then
 file, never into chat, logs or the repository (see README "Create an agent key").
 Verify with `python3 tests/mcp_live.py`.
 
+## Upgrading (for agents asked to "upgrade" or "update" an install)
+
+Follow docs/INSTALL.md [Upgrades](docs/INSTALL.md#upgrades) step by step; never
+skip the backup or a note's steps. In short: find the installed version, read
+every CHANGELOG section and **Upgrading to …** note between it and the target,
+back up `data/`, check out a release tag (never `main` for an install), rebuild
+(`scripts/exe-dev-up.sh` on exe.dev), do the notes' steps, then verify with
+`server_info`, `token list` and `python3 tests/mcp_live.py`. Run only the
+owner-side commands the notes give, and never print or move keys. Finish by
+telling the owner, in plain words, what changed for them and anything only they
+can do (for example: give a teammate a key in their own account and revoke the
+old shared one). If a check fails, roll back as the notes say and report.
+
 ## Git: every change has an issue
 
 The project is maintained by a coding agent working for the owner: the owner
@@ -204,7 +225,8 @@ first", or a large or risky one the owner should review before it lands.
    CI and docs-only changes ride along with the next release.
    1. In `CHANGELOG.md`, rename `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD`,
       add a fresh empty `## [Unreleased]` above it, and update the comparison
-      links at the bottom. Commit it as `Release vX.Y.Z` with `Refs #N` for the
+      links at the bottom. Check that every upgrade note for this release in
+      docs/INSTALL.md names X.Y.Z. Commit it as `Release vX.Y.Z` with `Refs #N` for the
       release issue, or as part of the last change of the release.
    2. Tag that commit and push the tag:
       `git tag -a vX.Y.Z -m "vX.Y.Z" && git push origin vX.Y.Z`. Where tags

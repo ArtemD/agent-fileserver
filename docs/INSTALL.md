@@ -99,9 +99,9 @@ docker compose run --rm -T admin token revoke claude
 ```
 
 `--account` is required. A key manages only its account's releases; keys and
-releases from before accounts existed (before 0.5.0) are in account `owner`, so
-an upgrade needs no migration. Upgrading changes nothing for existing keys;
-only `token create` scripts must add `--account`. A key cannot be moved to
+releases from before accounts existed (before 0.5.0) are in account `owner`.
+Upgrading from an older version: see
+[Upgrading to the release with accounts](#upgrades). A key cannot be moved to
 another account: create a new key in the target account. Releases stay in the
 account that published them, also after all its keys are revoked.
 
@@ -179,11 +179,33 @@ sudo tail -F logs/access.json             # every request, keys redacted
 
 ## Upgrades
 
-```sh
-git fetch --tags                          # review the release notes first
-git checkout vX.Y.Z                       # a tested release, or `git pull` for main
-FSERVER_VERSION=$(git describe --tags --always --dirty) docker compose up -d --build --wait
-```
+Do every upgrade, by hand or by an agent, in this order:
+
+1. **Find the installed version:** `git describe --tags` in the checkout, or
+   `version` in `server_info`.
+2. **Read what changed:** every `CHANGELOG.md` section after the installed
+   version up to the target, and every **Upgrading to …** note below for those
+   versions. Notes are newest first and name their version. Do the steps of
+   each note you pass, oldest first, also when you skip versions.
+3. **Back up** the data directory ([Backups and restore](#backups-and-restore)).
+4. **Upgrade** to a tested release tag (not `main`):
+
+   ```sh
+   git fetch --tags
+   git checkout vX.Y.Z
+   FSERVER_VERSION=$(git describe --tags --always --dirty) docker compose up -d --build --wait
+   ```
+
+   Direct mode adds `-f compose.direct.yaml`; on exe.dev run
+   `scripts/exe-dev-up.sh` instead of the last command.
+5. **Do the notes' steps** that come after the upgrade.
+6. **Verify:** `docker compose ps` shows both services healthy, `server_info`
+   reports the new `version`, `token list` still lists your keys, and
+   `python3 tests/mcp_live.py` passes. It works in an account of its own with a
+   one-day key it revokes, so it never sees or touches your releases.
+7. **Roll back** if something is wrong: `git checkout` the previous tag and run
+   the same `up` command. If a note says the new version changed data, restore
+   the step 3 backup as that note describes.
 
 `FSERVER_VERSION` is a build-time variable that stamps the version shown by
 `server_info` and MCP; without it the build reports `dev`.
@@ -200,13 +222,57 @@ rewritten. Links already handed out on the old domain keep working only while
 that hostname still reaches this server, so keep it pointed here (or redirect
 it) until those links have aged out.
 
-**Upgrading to the release with panels:** a new tool, `upload_from_computer`,
+**Upgrading to the release with accounts (0.5.0):** every key now belongs to
+an account and manages only that account's releases. Existing keys and releases
+are put in account `owner` automatically: nothing is rewritten, clients keep
+their URL and key, and nobody has to reconnect. Step by step:
+
+1. Back up the data directory ([Backups and restore](#backups-and-restore)).
+   You need it only to roll back (step 7).
+2. Upgrade as above (`git checkout v0.5.0`, then the `up` command).
+3. Check that nothing moved:
+
+   ```sh
+   docker compose run --rm -T admin token list    # every existing key shows "account": "owner"
+   ```
+
+   In a chat, `server_info` reports `"account": "owner"` and `list_releases`
+   shows the same releases as before.
+4. Update anything that creates keys: `token create` now refuses to run without
+   `--account`. For your own keys add `--account owner`.
+5. Add a teammate: create a key in an account of their own and give it to them
+   privately. They add their own connector with it, exactly as in the README.
+
+   ```sh
+   umask 077
+   docker compose run --rm -T admin token create --label maria-claude --account maria --days 0 > ~/.config/agent-fileserver/maria.key
+   ```
+
+6. **If someone else already has a key**, it is in account `owner` and still
+   sees and manages all of your releases. Close that:
+   1. Create them a new key in their own account (step 5).
+   2. They replace the key in their connector and check that `server_info`
+      shows their account.
+   3. Revoke the old key: `docker compose run --rm -T admin token revoke OLD_LABEL`.
+
+   Releases they published with the old key stay in `owner`, where you keep
+   managing them. A release cannot be moved to another account. If they should
+   own one, they publish it again with their new key (it gets a new link) and
+   you delete the old copy with `delete_release`.
+7. Rolling back to 0.4.x works while every key is in `owner`. Once a key in
+   another account exists, the older version cannot read the key registry and
+   the service does not start (it fails closed). To roll back anyway, stop the
+   stack and restore `data/credentials/` from the step 1 backup. Keys created
+   since then are gone, and releases of other accounts become manageable by
+   every key again, as before accounts.
+
+**Upgrading to the release with panels (0.4.0):** a new tool, `upload_from_computer`,
 and three `ui://` resources appear; the server now also declares the
 `resources` capability. `/_upload` now answers CORS preflights and no longer
 refuses a foreign `Origin` (the ticket is still required). Rebuild the image;
 no data or configuration changes are needed.
 
-**Upgrading to the release with expiry:** existing releases have no expiry and
+**Upgrading to the release with expiry (0.3.0):** existing releases have no expiry and
 keep living; nothing is deleted on upgrade. Only releases published afterwards
 get the default expiry. To give an old release an expiry, an agent calls
 `set_expiry`. Two changes may need action: `list_releases` now returns an object
