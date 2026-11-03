@@ -12,7 +12,7 @@ ARG VERSION=dev
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.buildVersion=${VERSION}" \
       -o /out/agent-fileserver .
 
-FROM alpine:3.24.2
+FROM alpine:3.24.3
 # brotli precompresses published assets; nothing else is needed at runtime.
 RUN apk add --no-cache brotli \
  && addgroup -g 10001 afs \
