@@ -3,7 +3,8 @@
 MCP is the only management interface, so tests create releases exactly the way
 agents do. Python stdlib and curl only. The fixture key lives in a private 0600
 header file, never in command arguments, output or exceptions. Each fixture
-deletes only the releases it created and revokes only its own one-day key.
+deletes only the releases it created and revokes only its own one-day key,
+which is in an account of its own (issue #32).
 
 Knobs: FSERVER_TEST_ADMIN (shlex-split owner key-administration command;
 defaults to `docker compose run --rm -T admin`, run from the repository root).
@@ -56,7 +57,9 @@ class MCPFixture:
         self.releases = []
         self.work = tempfile.TemporaryDirectory(prefix="agent-fileserver-fixture-")
         os.chmod(self.work.name, 0o700)
-        result = subprocess.run([*ADMIN, "token", "create", "--label", self.label, "--days", "1"],
+        # Its own account: the fixture never sees or touches other releases.
+        result = subprocess.run([*ADMIN, "token", "create", "--label", self.label,
+                                 "--account", self.label, "--days", "1"],
                                 capture_output=True, text=True, timeout=30)
         self.key = result.stdout.strip()
         if result.returncode != 0 or not KEY.fullmatch(self.key):

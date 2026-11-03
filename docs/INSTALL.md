@@ -92,10 +92,18 @@ exe.dev** button does the same through exe.dev's agent, guided by AGENTS.md.
 
 ```sh
 umask 077; mkdir -p ~/.config/agent-fileserver
-docker compose run --rm -T admin token create --label claude --days 0 > ~/.config/agent-fileserver/claude.key
+docker compose run --rm -T admin token create --label claude --account owner --days 0 > ~/.config/agent-fileserver/claude.key
+docker compose run --rm -T admin token create --label maria --account maria --days 0 > ~/.config/agent-fileserver/maria.key
 docker compose run --rm -T admin token list
 docker compose run --rm -T admin token revoke claude
 ```
+
+`--account` is required. A key manages only its account's releases; keys and
+releases from before accounts existed (before 0.5.0) are in account `owner`, so
+an upgrade needs no migration. Upgrading changes nothing for existing keys;
+only `token create` scripts must add `--account`. A key cannot be moved to
+another account: create a new key in the target account. Releases stay in the
+account that published them, also after all its keys are revoked.
 
 Revocation is effective on the next request; no restart. The running API mounts
 the key registry read-only, so a compromised service cannot mint keys.

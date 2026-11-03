@@ -8,7 +8,7 @@ fix before publishing exploit details. The fix commit references the advisory
 (`Refs GHSA-…`) instead of a public issue.
 
 Review [the security model](docs/ARCHITECTURE.md) before installation. A leaked
-agent key manages every release on its instance. Revoke it locally, provision a
+agent key manages every release of its account. Revoke it locally, provision a
 new named key into the client secret store, and inspect private audit logs.
 Never upload an incident backup or a secret handoff to the public repository.
 

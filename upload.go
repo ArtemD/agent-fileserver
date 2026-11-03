@@ -37,12 +37,12 @@ var errUploadTicketsFull = errors.New("too many pending upload tickets")
 // The visitor password stays in memory for at most the ticket's lifetime and
 // is never logged or written; the replay record stores only its bcrypt hash.
 type uploadTicket struct {
-	agentID, agentLabel string
-	size                int64
-	sha256              [32]byte
-	filename, key       string
-	meta                uploadMetadata
-	expires             time.Time
+	agentID, agentLabel, account string
+	size                         int64
+	sha256                       [32]byte
+	filename, key                string
+	meta                         uploadMetadata
+	expires                      time.Time
 }
 
 type beginUploadRequest struct {
@@ -120,7 +120,7 @@ func (a *apiServer) beginUpload(w http.ResponseWriter, r *http.Request, id strin
 		return
 	}
 	meta := uploadMetadata{Label: req.Label, SPA: req.SPA, Password: req.Password, Token: req.Token, ExpiresInDays: req.ExpiresInDays}
-	if status, msg := a.checkLifecycle(meta); status != 0 {
+	if status, msg := a.checkLifecycle(meta, identity.Account); status != 0 {
 		apiError(w, status, id, msg)
 		return
 	}
@@ -138,7 +138,7 @@ func (a *apiServer) beginUpload(w http.ResponseWriter, r *http.Request, id strin
 		apiError(w, 507, id, "insufficient free disk space")
 		return
 	}
-	t := uploadTicket{agentID: identity.ID, agentLabel: identity.Label, size: req.Size, filename: req.Filename,
+	t := uploadTicket{agentID: identity.ID, agentLabel: identity.Label, account: identity.Account, size: req.Size, filename: req.Filename,
 		key: req.IdempotencyKey, meta: meta}
 	copy(t.sha256[:], sum)
 	raw, expires, err := a.mintTicket(t, time.Now())
@@ -345,5 +345,6 @@ func (a *apiServer) serveUpload(w http.ResponseWriter, r *http.Request, id strin
 		apiError(w, 429, id, "publisher busy; retry with a new ticket and the same idempotency_key")
 		return
 	}
-	a.publishSpool(ctx, w, id, t.agentID, t.key, t.meta, policy, f, hex.EncodeToString(digest.Sum(nil)), limits)
+	identity := agentIdentity{ID: t.agentID, Label: t.agentLabel, Account: t.account}
+	a.publishSpool(ctx, w, id, identity, t.key, t.meta, policy, f, hex.EncodeToString(digest.Sum(nil)), limits)
 }

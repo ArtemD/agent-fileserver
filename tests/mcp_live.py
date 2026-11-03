@@ -25,6 +25,9 @@ MCP Apps panels (issues #23-#25): ui:// resources over resources/list and
 resources/read, the tool-to-panel links in tools/list, upload_from_computer, and
 CORS on /_upload (preflight and a cross-origin PUT with a ticket). The panels'
 browser behaviour is tested separately with the tests/ui_*.test.mjs files.
+Accounts (issue #32): every fixture key is in the suite's own account, so the
+suite never sees the installation's other releases; a key of a second account
+cannot list, read, change or delete them, and gets "release not found".
 Set FSERVER_TEST_LARGE=1 for an additional exact-100-MiB decoded archive check
 and a 256 MiB single-file upload/download round trip.
 """
@@ -131,10 +134,12 @@ class MCPLive(unittest.TestCase):
         return result.stdout
 
     @classmethod
-    def create_key(cls, label):
+    def create_key(cls, label, account=None):
         # Track before creation, so setup failure still attempts revocation.
+        # Keys default to the suite's own account (its tag), never "owner".
         cls.labels.add(label)
-        raw = cls.command(["token", "create", "--label", label, "--days", "1"],
+        raw = cls.command(["token", "create", "--label", label,
+                           "--account", account or cls.tag, "--days", "1"],
                           "fixture credential creation failed").decode().strip()
         if raw.startswith("{"):
             try:
@@ -329,7 +334,7 @@ class MCPLive(unittest.TestCase):
 
     # publish_limit is 30 publishes per key per hour and the whole suite
     # publishes more, so the lifecycle tests (24 and up) use their own key.
-    # Keys manage the whole installation, so cleanup works with either.
+    # Both keys are in the suite's account, so cleanup works with either.
     def setUp(self):
         number = self._testMethodName.split("_")[1]
         if number.isdigit() and int(number) >= 24:
@@ -1177,6 +1182,45 @@ class MCPLive(unittest.TestCase):
         self.releases.discard(view["token"])
         check(self.request("/" + view["token"] + "/cors.bin", anonymous=True)[0] == 404,
               "deleted cross-origin release is still served")
+
+    def test_37_accounts_cannot_see_or_manage_each_other(self):
+        mine = self.publish(args=self.site_args(expires_in_days=1))
+        token = mine["token"]
+        before = self.tool("release_info", {"token": token})
+        check(self.tool("server_info", {}).get("account") == self.tag,
+              "server_info does not report the key's account")
+        cls = type(self)
+        main = cls.key
+        cls.key = self.create_key(self.tag + "-other", account=self.tag + "-other")
+        try:
+            check(self.tool("server_info", {}).get("account") == self.tag + "-other",
+                  "server_info of the second account mismatch")
+            listed = self.tool("list_releases", {})
+            check(listed.get("count") == 0 and listed.get("releases") == [],
+                  "a new account lists releases it did not publish")
+            unknown = secrets.token_urlsafe(16)
+            files = [{"path": "index.html", "text": "taken over"}]
+            for name, args in (
+                    ("release_info", {}), ("download_release", {}), ("delete_release", {}),
+                    ("set_password", {"password": secrets.token_urlsafe(24)}),
+                    ("reset_password", {}), ("remove_password", {}),
+                    ("set_expiry", {"expires_in_days": 0}),
+                    ("publish_files", {"idempotency_key": secrets.token_urlsafe(24), "files": files}),
+                    ("upload_from_computer", {}),
+                    ("begin_upload", {"size": 10, "sha256": hashlib.sha256(b"taken over").hexdigest(),
+                                      "filename": "index.html",
+                                      "idempotency_key": secrets.token_urlsafe(24)})):
+                other = self.tool_error(name, {**args, "token": token})["error"]
+                missing = self.tool_error(name, {**args, "token": unknown})["error"]
+                check(other == "release not found" and other == missing,
+                      "another account's release is not answered like an unknown one: " + name)
+        finally:
+            cls.key = main
+        check(self.tool("release_info", {"token": token}) == before,
+              "a key of another account changed the release")
+        self.public_bytes(token, "index.html", HTML)
+        self.tool("delete_release", {"token": token})
+        self.releases.discard(token)
 
     @unittest.skipUnless(os.environ.get("FSERVER_TEST_LARGE") == "1",
                          "set FSERVER_TEST_LARGE=1 for the 256 MiB upload")

@@ -5,7 +5,8 @@ Instructions for coding agents and humans working on this repository.
 
 ## Project
 
-Agent Fileserver: a single-owner static file publisher whose **only management
+Agent Fileserver: a single-owner static file publisher, split into accounts
+(each key manages only its account's releases), whose **only management
 interface is remote MCP** (`/mcp`, Streamable HTTP, stateless). It runs **only
 as Docker Compose**: an official Caddy container serves release bytes and routes
 `/mcp` and the ticket-only `PUT /_upload` over a Unix socket to the Go service
@@ -16,7 +17,8 @@ form, Python client, native installer or CLI publishing. Hosts that support
 MCP Apps (Claude) render tool results as panels in the chat; the panels are
 static `ui://` MCP resources embedded in the binary, not pages the server hosts
 and not a management API. The `admin` compose
-service only administers keys (`token create|list|revoke`).
+service only administers keys (`token create|list|revoke`) and the account
+each key belongs to.
 
 ## Commands
 
@@ -130,6 +132,9 @@ A change is not finished until **all** of these are updated in the same commit:
   through `expectPhoneFit` (`tests/ui_host.mjs`); `check_consistency.py`
   enforces the test, the viewport tag and the shared touch sizes in
   `ui/base.css`.
+- Accounts stay separate: every route that names a release, and every update
+  target, checks the caller's account, and another account's release is
+  answered exactly like an unknown token (`release not found`).
 - Fail closed: a missing or invalid access policy denies access; reject
   traversal, links, special files, secrets and limit violations.
 - Redact secrets: never log request bodies, passwords, uploaded content, raw MCP

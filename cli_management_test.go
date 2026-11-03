@@ -20,7 +20,10 @@ func TestManagementTokenCLI(t *testing.T) {
 	var out, diagnostics bytes.Buffer
 	for _, args := range [][]string{
 		{"token"}, {"token", "unknown"}, {"token", "create"},
-		{"token", "create", "--label", "test", "--days", "-1"},
+		{"token", "create", "--label", "test", "--account", "owner", "--days", "-1"},
+		// --account is required, so a teammate key never lands in owner by accident.
+		{"token", "create", "--label", "test", "--days", "1"},
+		{"token", "create", "--label", "test", "--account", "Bad Name", "--days", "1"},
 		{"token", "list", "unexpected"}, {"token", "revoke"},
 		{"serve"}, {"migrate-policies", "unexpected"},
 	} {
@@ -32,7 +35,7 @@ func TestManagementTokenCLI(t *testing.T) {
 		t.Fatal("invalid command created registry")
 	}
 	out.Reset()
-	if err := run([]string{"token", "create", "--label", "fixture", "--days", "1"}, &out, &diagnostics); err != nil {
+	if err := run([]string{"token", "create", "--label", "fixture", "--account", "maria", "--days", "1"}, &out, &diagnostics); err != nil {
 		t.Fatal(err)
 	}
 	raw := strings.TrimSpace(out.String())
@@ -44,7 +47,7 @@ func TestManagementTokenCLI(t *testing.T) {
 		t.Fatal(err)
 	}
 	var rows []map[string]any
-	if err := json.Unmarshal(out.Bytes(), &rows); err != nil || len(rows) != 1 {
+	if err := json.Unmarshal(out.Bytes(), &rows); err != nil || len(rows) != 1 || rows[0]["account"] != "maria" {
 		t.Fatalf("list: %s %v", out.String(), err)
 	}
 	if strings.Contains(out.String(), raw) || strings.Contains(out.String(), "hash") {

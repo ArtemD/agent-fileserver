@@ -18,7 +18,8 @@ own server over **remote MCP**, and get back a fresh, unguessable URL to share.
 - **Panels in Claude:** a release card, a releases dashboard and an upload panel where you drop a file from your own computer ([details](#panels-in-the-chat)).
 - Docker Compose: Caddy serves bytes; a sandboxed Go service (no network) handles MCP on a private Unix socket.
 - No database, analytics, uploaded code execution or directory listing.
-- MIT licensed. One installation per owner; give other people their own instance.
+- **Accounts:** give a teammate a key in their own account; they publish and manage their releases and never see or touch yours.
+- MIT licensed.
 
 **Runs anywhere with Docker Compose** (amd64 or arm64).
 
@@ -60,14 +61,31 @@ Details, backups and upgrades: [installation and operations](docs/INSTALL.md).
 ## 2. Create an agent key
 
 Keys are created **on the server only**, by the owner. Use one label per agent
-or person so you can revoke them individually. Each key manages **all** releases
-on this instance.
+or device so you can revoke them individually. Every key belongs to an
+**account** (`--account`, required): a key sees and manages the releases of its
+own account only. Your own keys go in account `owner`, where keys made before
+accounts existed already are.
 
 ```sh
 umask 077; mkdir -p ~/.config/agent-fileserver
-docker compose run --rm -T admin token create --label claude --days 0 \
+docker compose run --rm -T admin token create --label claude --account owner --days 0 \
   > ~/.config/agent-fileserver/claude.key
 ```
+
+To let a teammate publish without seeing your releases, give them a key in an
+account of their own, for example
+`token create --label maria-claude --account maria --days 0`, and hand them the
+key privately (not in chat). Their `list_releases` shows only their releases;
+`release_info`, `download_release`, `delete_release`, the password tools,
+`set_expiry` and updates with `token` answer `release not found` for yours,
+exactly as for a token that does not exist. Several keys can share an account
+(one per device); revoking one leaves the account's releases in place. Account
+names are 1 to 64 lowercase letters, digits, `.`, `_` or `-`.
+
+Accounts separate management, not visitors: a release link still works for
+anyone who has it, and every release is served from the same hostname, so a
+page published by one account can run JavaScript on the same browser origin as
+the others. Only give accounts to people whose published pages you trust.
 
 The key is printed once, straight into that private file; the server stores
 only its hash (never in `.env`). `--days 0` means no expiry (use `--days 90` for
@@ -123,11 +141,12 @@ Clients that only support OAuth, legacy SSE or local stdio servers can't connect
 ### Rotate or revoke
 
 ```sh
-docker compose run --rm -T admin token list            # labels, status, expiry; never secrets
+docker compose run --rm -T admin token list            # labels, accounts, status, expiry; never secrets
 docker compose run --rm -T admin token revoke claude   # effective on the next request, no restart
 ```
 
-To rotate, create a new label, update the client, then revoke the old one.
+To rotate, create a new label in the same account, update the client, then
+revoke the old one. The account keeps its releases.
 
 ## 4. Use it
 

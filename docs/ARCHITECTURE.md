@@ -1,8 +1,10 @@
 # Architecture and security model
 
-One installation is one owner's namespace. Separate owners should have separate
-instances, hostnames and credentials; releases on one instance share a browser
-origin and all its agent keys can manage all its releases.
+One installation is one owner's namespace, split into accounts. Every agent
+key belongs to one account and manages only that account's releases (see
+[Accounts](#accounts)). Releases on one instance still share one hostname and
+browser origin, so people who must not trust each other's published JavaScript
+should have separate instances.
 
 ```text
 MCP client (Claude, Claude Code, …)
@@ -30,7 +32,8 @@ the service refuses anything else that did not come from the MCP adapter. It use
 official MCP Go SDK and Streamable HTTP. Stateless request authentication keeps
 revocation effective on subsequent calls. Management credentials are headers,
 never tool arguments, query parameters, browser cookies or visitor passwords.
-No OAuth account database is needed for this single-owner Bearer-key model.
+No OAuth account database is needed for this Bearer-key model: accounts are a
+name on each key record, set by the owner with the `admin` service.
 
 ## Processes and storage
 
@@ -136,7 +139,8 @@ management key can obtain one.
   held, in memory, never on disk, and tickets vanish on restart.
 - Valid for 30 minutes and single use: consumed by the first `PUT` that presents
   it, whatever the outcome. At most 8 unused tickets exist at once.
-- Bound to the minting key and revoked with it.
+- Bound to the minting key and revoked with it; the release lands in that
+  key's account.
 - Read only from `Authorization: Bearer` on `/_upload`. Never from the URL or
   `X-Auth-Token`, and refused on `/mcp`. Management keys are refused on
   `/_upload`, so a leaked ticket cannot manage anything and a leaked key is not
@@ -211,9 +215,33 @@ This adds no route and no management surface: a panel is data returned over
 ## Credentials and privacy
 
 Named API keys have 256 random bits, independent revocation and optional expiry;
-the server registry stores only SHA-256 hashes. Each key manages the installation,
-not just releases created by that key. There is no remote token-administration
-tool. Default non-expiry is intentional; revoke and replace suspected keys.
+the server registry stores only SHA-256 hashes. Each key manages its account's
+releases, not just releases created by that key. There is no remote
+token-administration tool.
+
+## Accounts
+
+- Every key record has an account; `token create` requires `--account`, so a
+  key for another person never lands in the owner's account by a forgotten
+  flag. Keys from before accounts existed, and records that omit the field,
+  are in account `owner`. Several keys may share an account.
+- Every release records the account of the key that published it (manifest
+  field `owner`, omitted for `owner`, so existing releases need no migration
+  and a single-account install can still downgrade). The field is never shown
+  in a release view.
+- The release core checks the caller's account after authentication on every
+  route that names a release (info, download, delete, password, expiry) and
+  for the update target of `publish_*`, `begin_upload` and
+  `upload_from_computer`. Another account's release gets the same
+  `release not found` (404) as an unknown token, so a key cannot learn that a
+  token exists elsewhere. `list_releases` and its totals cover the caller's
+  account only. The store re-checks the owner under its lock before an
+  in-place update.
+- Upload tickets carry the account of the key that minted them; idempotency
+  records and publish rate limits stay per key.
+- Not separated: visitors (a link is public, or password-protected, for anyone
+  who has it), the browser origin, disk space (`server_info` reports the
+  shared filesystem) and the expiry sweeper, which serves every account. Default non-expiry is intentional; revoke and replace suspected keys.
 
 Visitor passwords use HTTP Basic username `viewer` and bcrypt hashes. A password
 protects the entire release, assets, ranges and SPA routes included. API keys

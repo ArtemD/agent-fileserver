@@ -10,6 +10,28 @@ Each release on GitHub also lists every commit and the issues it closed.
 
 ## [Unreleased]
 
+### Added
+
+- Accounts. Every key belongs to an account, and a key sees and manages only
+  its account's releases: `list_releases` and its totals show only them, and
+  `release_info`, `download_release`, `delete_release`, the password tools,
+  `set_expiry` and updates with `token` (also through `begin_upload` and
+  `upload_from_computer`) answer `release not found` for another account's
+  release, the same as for an unknown token. Give a teammate a key in their own
+  account so they can publish without seeing or touching yours.
+  `server_info` reports `account`, and `token list` shows each key's account.
+  Release links themselves are unchanged and stay public (or
+  password-protected) for anyone who has them
+  ([#32](https://github.com/ArtemD/agent-fileserver/issues/32)).
+
+### Changed
+
+- `token create` requires `--account NAME`. Operators: add `--account owner`
+  to scripts that create your own keys, and use a new account name for anyone
+  else. Existing keys and releases are in account `owner` and keep working
+  with no migration; nothing changes for clients
+  ([#32](https://github.com/ArtemD/agent-fileserver/issues/32)).
+
 ## [0.4.2] - 2026-11-03
 
 ### Fixed

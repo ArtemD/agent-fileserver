@@ -51,7 +51,7 @@ func TestTokenStoreReadOnlyConstructionAndReads(t *testing.T) {
 	if _, err = os.Stat(filepath.Dir(path)); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatal("reader mutated missing registry directory")
 	}
-	_, raw, err := store.Create("read-only", 0)
+	_, raw, err := store.Create("read-only", defaultAccount, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func TestTokenStoreReadOnlyConstructionAndReads(t *testing.T) {
 }
 func TestTokenStoreAuthExpiryRevocationAndSafeSummary(t *testing.T) {
 	store := securityTokens(t)
-	summary, raw, err := store.Create("cloud agent", 0)
+	summary, raw, err := store.Create("cloud agent", defaultAccount, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func TestTokenStoreAuthExpiryRevocationAndSafeSummary(t *testing.T) {
 	assertSecurityMode(t, filepath.Dir(store.path), 0700)
 	assertSecurityMode(t, store.path, 0600)
 	assertSecurityMode(t, store.path+".lock", 0600)
-	expiry, expiring, err := store.Create("expiring", 1)
+	expiry, expiring, err := store.Create("expiring", defaultAccount, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +158,7 @@ func TestTokenStoreAuthExpiryRevocationAndSafeSummary(t *testing.T) {
 	if err = store.Revoke("unknown"); err == nil {
 		t.Fatal("unknown revoke accepted")
 	}
-	if _, _, err = store.Create(summary.Label, 0); err == nil {
+	if _, _, err = store.Create(summary.Label, defaultAccount, 0); err == nil {
 		t.Fatal("revoked label reused")
 	}
 	list, err := store.List()
@@ -166,19 +166,19 @@ func TestTokenStoreAuthExpiryRevocationAndSafeSummary(t *testing.T) {
 		t.Fatalf("list: %+v %v", list, err)
 	}
 	for _, label := range []string{"", "bad\nlabel", "nul\x00label", string([]byte{0xff}), strings.Repeat("界", 201)} {
-		if _, _, err = store.Create(label, 0); err == nil {
+		if _, _, err = store.Create(label, defaultAccount, 0); err == nil {
 			t.Errorf("accepted label %q", label)
 		}
 	}
 	for _, days := range []int{-1, 365001} {
-		if _, _, err = store.Create("invalid-days", days); err == nil {
+		if _, _, err = store.Create("invalid-days", defaultAccount, days); err == nil {
 			t.Fatal("invalid lifetime accepted")
 		}
 	}
 }
 func TestTokenStoreConcurrentWritersAndImmediateRevocation(t *testing.T) {
 	store := securityTokens(t)
-	_, raw, err := store.Create("first", 0)
+	_, raw, err := store.Create("first", defaultAccount, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,7 +191,7 @@ func TestTokenStoreConcurrentWritersAndImmediateRevocation(t *testing.T) {
 			defer wg.Done()
 			other, e := newTokenStore(store.path)
 			if e == nil {
-				_, _, e = other.Create(fmt.Sprintf("agent-%02d", i), 0)
+				_, _, e = other.Create(fmt.Sprintf("agent-%02d", i), defaultAccount, 0)
 			}
 			errs <- e
 		}(i)
@@ -227,7 +227,7 @@ func TestTokenStoreConcurrentWritersAndImmediateRevocation(t *testing.T) {
 }
 func TestTokenStoreMalformedRegistryFailsClosed(t *testing.T) {
 	store := securityTokens(t)
-	_, raw, err := store.Create("fixture", 0)
+	_, raw, err := store.Create("fixture", defaultAccount, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -273,7 +273,7 @@ func TestTokenStoreMalformedRegistryFailsClosed(t *testing.T) {
 			if _, err := store.List(); err == nil {
 				t.Fatal("malformed registry listed")
 			}
-			if _, _, err := store.Create("must-not-overwrite", 0); err == nil {
+			if _, _, err := store.Create("must-not-overwrite", defaultAccount, 0); err == nil {
 				t.Fatal("malformed registry overwritten")
 			}
 		})

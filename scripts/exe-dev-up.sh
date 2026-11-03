@@ -39,6 +39,6 @@ Running. Next steps:
        ssh exe.dev share set-public ${name:-VMNAME}
   2. On this VM, create an agent key into a private file:
        umask 077; mkdir -p ~/.config/agent-fileserver
-       docker compose run --rm -T admin token create --label claude --days 0 > ~/.config/agent-fileserver/claude.key
+       docker compose run --rm -T admin token create --label claude --account owner --days 0 > ~/.config/agent-fileserver/claude.key
   3. Connect your MCP client (see README "Connect and authenticate").
 NEXT

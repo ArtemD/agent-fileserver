@@ -101,6 +101,16 @@ for path in tracked():
         if re.search(r"""(?:\b(?:src|href|action)\s*=\s*["']?|url\(\s*["']?)(?:https?:)?//""", text):
             fail(f"{path} loads a resource from another origin; panels must be self-contained")
 
+# 2c. Accounts (issue #32): every documented or scripted key creation names its
+# account, so no example puts a teammate's key in the owner's account.
+for path in tracked():
+    if path.endswith((".md", ".sh", ".py", ".yaml", ".yml", ".go", ".example")) and not path.endswith("_test.go"):
+        lines = read(path).splitlines()
+        for i, line in enumerate(lines):
+            nearby = line + " ".join(lines[i + 1:i + 2])  # an argument list may wrap once
+            if re.search(r"token create\b.*--label|\"create\", \"--label\"", line) and "--account" not in nearby:
+                fail(f"{path}: token create without --account: {line.strip()[:120]}")
+
 # 3. Removed interfaces stay removed: MCP is the only management interface.
 docs = [p for p in tracked() if p.endswith(".md")] + ["deploy/caddy/routes.caddy", "compose.yaml", ".env.example"]
 for path in docs:

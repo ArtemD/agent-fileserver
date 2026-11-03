@@ -1,7 +1,7 @@
 # Agent Fileserver: Caddy + MCP service. Configure via .env (copy .env.example).
 #   docker compose up -d --build                          # proxy mode (default, e.g. exe.dev)
 #   docker compose -f compose.yaml -f compose.direct.yaml up -d --build   # direct HTTPS
-#   docker compose run --rm admin token create --label NAME --days 0      # owner key admin
+#   docker compose run --rm admin token create --label NAME --account owner --days 0  # owner key admin
 name: agent-fileserver
 
 x-hardened: &hardened

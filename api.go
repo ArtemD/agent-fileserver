@@ -435,7 +435,7 @@ func (a *apiServer) ServeHTTP(out http.ResponseWriter, r *http.Request) {
 	}
 	if r.URL.Path == "/mcp" {
 		operation = "mcp"
-		a.serveMCP(w, r, id)
+		a.serveMCP(w, r, id, identity)
 		return
 	}
 	if r.URL.Path == "/_api/v1/me" {
@@ -453,7 +453,7 @@ func (a *apiServer) ServeHTTP(out http.ResponseWriter, r *http.Request) {
 			r := diskReportFor(st, a.cfg, mcpLimits)
 			disk = &r
 		}
-		apiJSON(w, 200, map[string]any{"version": buildVersion, "namespace": a.cfg.Namespace, "agent": identity.Label,
+		apiJSON(w, 200, map[string]any{"version": buildVersion, "namespace": a.cfg.Namespace, "agent": identity.Label, "account": identity.Account,
 			"default_expiry_days": a.cfg.DefaultExpiryDays, "disk": disk,
 			"limits": map[string]any{"max_upload_bytes": mcpLimits.MaxUploadBytes, "max_extract_bytes": mcpLimits.MaxExtractBytes, "max_entries": mcpLimits.MaxEntries, "min_free_bytes": a.cfg.MinFreeBytes, "min_free_inodes": minFreeInodes, "publish_limit": a.cfg.PublishLimit, "publish_window_seconds": 3600, "request_timeout_seconds": 170},
 			"upload": map[string]any{"max_bytes": a.cfg.MaxUploadBytes, "max_extract_bytes": a.cfg.MaxExtractBytes, "max_entries": a.cfg.MaxEntries, "ticket_seconds": int(uploadTicketTTL / time.Second), "max_pending_tickets": uploadMaxPending}})
@@ -472,12 +472,19 @@ func (a *apiServer) ServeHTTP(out http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case "GET":
 			operation = "list"
-			ms, e := a.s.list()
+			all, e := a.s.list()
 			if e != nil {
 				apiError(w, 500, id, "could not list releases")
 				return
 			}
-			// Totals cover every active release; the views are bounded for JSON
+			// A key lists, counts and totals only its own account's releases.
+			ms := make([]manifest, 0, len(all))
+			for _, m := range all {
+				if m.account() == identity.Account {
+					ms = append(ms, m)
+				}
+			}
+			// Totals cover every active release of the account; the views are bounded for JSON
 			// serialization and MCP capture size: newest first, so the newest.
 			var total int64
 			expiring := 0
@@ -550,7 +557,9 @@ func (a *apiServer) ServeHTTP(out http.ResponseWriter, r *http.Request) {
 		return
 	}
 	m, e := a.s.info(token)
-	if e != nil {
+	// Another account's release is answered exactly like an unknown token, so a
+	// key cannot learn that it exists.
+	if e != nil || m.account() != identity.Account {
 		apiError(w, 404, id, "release not found")
 		return
 	}
@@ -645,12 +654,13 @@ func (a *apiServer) expiry(w http.ResponseWriter, r *http.Request, id string, m 
 
 // checkLifecycle validates the update target and expiry of a publish before
 // any bytes are processed.
-func (a *apiServer) checkLifecycle(meta uploadMetadata) (int, string) {
+// An update target of another account is "release not found", like an unknown one.
+func (a *apiServer) checkLifecycle(meta uploadMetadata, account string) (int, string) {
 	if meta.Token != "" {
 		if !validToken(meta.Token) {
 			return 400, "invalid release token"
 		}
-		if _, e := a.s.info(meta.Token); e != nil {
+		if m, e := a.s.info(meta.Token); e != nil || m.account() != account {
 			return 404, "release not found"
 		}
 	}
@@ -721,6 +731,8 @@ func methodError(w http.ResponseWriter, id, allow string) {
 }
 func (a *apiServer) view(m manifest) (releaseView, error) {
 	p, e := a.s.policy(m.Token)
+	// Every release a key sees is its own account's: the owner is not shown.
+	m.Owner = ""
 	v := releaseView{manifest: m, Protected: p.Protected}
 	if p.Protected {
 		v.Username = "viewer"
@@ -897,7 +909,7 @@ func (a *apiServer) upload(w http.ResponseWriter, r *http.Request, id string, id
 		apiError(w, 400, id, "invalid viewer password")
 		return
 	}
-	if status, msg := a.checkLifecycle(meta); status != 0 {
+	if status, msg := a.checkLifecycle(meta, identity.Account); status != 0 {
 		apiError(w, status, id, msg)
 		return
 	}
@@ -939,7 +951,7 @@ func (a *apiServer) upload(w http.ResponseWriter, r *http.Request, id string, id
 		apiError(w, 400, id, "unexpected data after multipart body")
 		return
 	}
-	a.publishSpool(ctx, w, id, identity.ID, key, meta, policy, f, hex.EncodeToString(h.Sum(nil)), limits)
+	a.publishSpool(ctx, w, id, identity, key, meta, policy, f, hex.EncodeToString(h.Sum(nil)), limits)
 }
 
 // spoolDigest starts the idempotency digest: canonical metadata without the
@@ -956,8 +968,8 @@ func spoolDigest(meta uploadMetadata) hash.Hash {
 // publishSpool turns a fully received private spool into a release: the
 // idempotency record, extraction, publisher validation and activation are the
 // same for MCP publishes and ticket uploads. The caller holds the publisher slot.
-func (a *apiServer) publishSpool(ctx context.Context, w http.ResponseWriter, id, agentID, key string, meta uploadMetadata, policy accessPolicy, f *os.File, digest string, limits apiConfig) {
-	kh := sha256.Sum256([]byte(agentID + "\x00" + key))
+func (a *apiServer) publishSpool(ctx context.Context, w http.ResponseWriter, id string, identity agentIdentity, key string, meta uploadMetadata, policy accessPolicy, f *os.File, digest string, limits apiConfig) {
+	kh := sha256.Sum256([]byte(identity.ID + "\x00" + key))
 	rp := filepath.Join(a.state, hex.EncodeToString(kh[:])+".json")
 	old, e := readReplay(rp)
 	if e == nil && time.Since(old.Created) <= 24*time.Hour {
@@ -980,7 +992,7 @@ func (a *apiServer) publishSpool(ctx context.Context, w http.ResponseWriter, id,
 			return
 		}
 		current, currentErr := a.s.info(old.Release.Token)
-		if currentErr != nil {
+		if currentErr != nil || current.account() != identity.Account {
 			apiError(w, 409, id, "original release is no longer active")
 			return
 		}
@@ -1002,7 +1014,7 @@ func (a *apiServer) publishSpool(ctx context.Context, w http.ResponseWriter, id,
 	}
 	// The target of an update must exist before extraction (it may have been
 	// deleted since begin_upload), and the expiry must be valid.
-	if status, msg := a.checkLifecycle(meta); status != 0 {
+	if status, msg := a.checkLifecycle(meta, identity.Account); status != 0 {
 		apiError(w, status, id, msg)
 		return
 	}
@@ -1054,7 +1066,7 @@ func (a *apiServer) publishSpool(ctx context.Context, w http.ResponseWriter, id,
 		apiError(w, 500, id, "could not persist publish intent")
 		return
 	}
-	opts := releaseOptions{Label: meta.Label, SPA: meta.SPA, Policy: &policy, Replace: meta.Token}
+	opts := releaseOptions{Label: meta.Label, SPA: meta.SPA, Policy: &policy, Replace: meta.Token, Owner: identity.Account}
 	// An update without a password keeps the current access policy; removing
 	// a password stays an explicit remove_password call.
 	if meta.Token != "" && meta.Password == "" {

@@ -601,7 +601,7 @@ func TestTokenStoreActive(t *testing.T) {
 		t.Fatal("revoked key reported active")
 	}
 	// Expiring keys.
-	_, raw, err := f.tokens.Create("expiring", 1)
+	_, raw, err := f.tokens.Create("expiring", defaultAccount, 1)
 	if err != nil {
 		t.Fatal(err)
 	}

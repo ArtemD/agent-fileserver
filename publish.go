@@ -39,7 +39,17 @@ type manifest struct {
 	// ExpiresAt is when the expiry sweeper deletes the release; null never.
 	// Releases from before expiry existed have no field and never expire.
 	ExpiresAt *time.Time `json:"expires_at"`
+	// Owner is the account that published the release, empty for the default
+	// account (and every release from before accounts existed). Only keys of
+	// that account can see or manage it. Never part of a release view.
+	Owner string `json:"owner,omitempty"`
 }
+
+// account is the account that owns the release.
+func (m manifest) account() string { return accountOf(m.Owner) }
+
+// errNotOwner refuses an in-place update of another account's release.
+var errNotOwner = errors.New("release belongs to another account")
 
 // expired reports whether the release is past its expiry at now. Visitors are
 // refused from that instant, before the sweeper deletes it.
@@ -406,6 +416,8 @@ type releaseOptions struct {
 	ExpiresAt  *time.Time
 	KeepExpiry bool
 	Replace    string
+	// Owner is the publishing account; empty means the default account.
+	Owner string
 }
 
 // stagedRelease is a validated, frozen private copy of a source, ready for the
@@ -534,6 +546,7 @@ func (s *store) activateLocked(ctx context.Context, r *stagedRelease, o releaseO
 	m.SourceBasename = r.name
 	m.SPA = o.SPA
 	m.ExpiresAt = o.ExpiresAt
+	m.Owner = storedAccount(accountOf(o.Owner))
 	if r.single {
 		m.OriginalFilename = r.name
 	}
@@ -579,6 +592,10 @@ func (s *store) replaceLocked(ctx context.Context, r *stagedRelease, o releaseOp
 	old, err := s.activeManifest(o.Replace)
 	if err != nil {
 		return manifest{}, err
+	}
+	// The API refuses this earlier; re-checked under the lock as a backstop.
+	if old.account() != accountOf(o.Owner) {
+		return manifest{}, errNotOwner
 	}
 	m := old
 	m.Files, m.Bytes, m.SPA = r.files, r.bytes, o.SPA

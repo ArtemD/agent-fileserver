@@ -41,7 +41,7 @@ func testAPI(t *testing.T) apiFixture {
 	if e != nil {
 		t.Fatal(e)
 	}
-	_, key, e := tokens.Create("test agent", 0)
+	_, key, e := tokens.Create("test agent", defaultAccount, 0)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -294,7 +294,7 @@ func TestAPIIdempotencyPersistentScopedDeletedAndAmbiguous(t *testing.T) {
 	}
 	changed, _ := uploadBody(t, []byte(`{"label":"different"}`), artifact)
 	assertAPIStatus(t, f.do("POST", "/_api/v1/releases", changed, ct, key), 409)
-	_, second, e := f.tokens.Create("other", 0)
+	_, second, e := f.tokens.Create("other", defaultAccount, 0)
 	if e != nil {
 		t.Fatal(e)
 	}

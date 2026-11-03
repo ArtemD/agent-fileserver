@@ -73,7 +73,7 @@ var errorHints = map[string]string{
 	// Routing and authentication.
 	"not found": "The path, release or file does not exist. Check the URL or token; agents can call list_releases " +
 		"for current tokens. A deleted release cannot be restored.",
-	"release not found": "No active release has this token (it may have been deleted or have expired). Call list_releases for current tokens; " +
+	"release not found": "No active release of your account has this token (it may have been deleted or have expired). Call list_releases for current tokens; " +
 		"a deleted release cannot be restored, so publish it again, without token, if you still need it. Nothing was changed.",
 	"invalid release token": "token must be the 22-character token of an existing release, as list_releases shows it. " +
 		"Leave token out to publish a new release. Nothing was published.",

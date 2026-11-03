@@ -72,17 +72,21 @@ func runManagement(args []string, stdout, stderr io.Writer) error {
 			return fmt.Errorf("usage: agent-fileserver token create|list|revoke")
 		}
 		// Parse before opening the registry; typos must not create credentials.
-		label, days := "", 0
+		label, account, days := "", "", 0
 		switch args[1] {
 		case "create":
 			f := managementFlags("token create", stderr)
 			f.StringVar(&label, "label", "", "unique agent label")
+			f.StringVar(&account, "account", "", "account that owns the key's releases (required; existing keys are in account owner)")
 			f.IntVar(&days, "days", 0, "validity in days (0: no expiry)")
 			if err := f.Parse(args[2:]); err != nil {
 				return err
 			}
-			if f.NArg() != 0 || label == "" || days < 0 {
-				return fmt.Errorf("usage: agent-fileserver token create --label NAME [--days N]")
+			if f.NArg() != 0 || label == "" || account == "" || days < 0 {
+				return fmt.Errorf("usage: agent-fileserver token create --label NAME --account NAME [--days N]")
+			}
+			if !validAccount(account) {
+				return fmt.Errorf("invalid account: use 1 to 64 lowercase letters, digits, '.', '_' or '-', starting with a letter or digit")
 			}
 		case "list":
 			if len(args) != 2 {
@@ -102,7 +106,7 @@ func runManagement(args []string, stdout, stderr io.Writer) error {
 		}
 		switch args[1] {
 		case "create":
-			_, raw, err := t.Create(label, days)
+			_, raw, err := t.Create(label, account, days)
 			if err != nil {
 				return err
 			}

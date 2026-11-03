@@ -90,8 +90,10 @@ python3 tests/access_logging.py
 
 All of them publish through MCP, exactly like agents. Each creates a one-day
 fixture key with `docker compose run --rm -T admin` (override with
-`FSERVER_TEST_ADMIN`), deletes only its own releases and revokes only its own
-key. Shared helper: `tests/mcp_fixture.py`.
+`FSERVER_TEST_ADMIN`) in an account of its own, so it never sees the
+installation's other releases, deletes only its own releases and revokes only
+its own key. `mcp_live.py` also checks that a key of a second account cannot
+list, read, change or delete them. Shared helper: `tests/mcp_fixture.py`.
 
 - `container_sandbox.py` inspects the running containers: non-root users,
   read-only root filesystems, dropped capabilities, no-new-privileges, the API

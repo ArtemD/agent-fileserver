@@ -43,6 +43,10 @@ var errMCPArrayLimit = errors.New("MCP array entry limit exceeded")
 
 type mcpRequestKey struct{}
 
+// mcpIdentityKey carries the authenticated key's identity to tools that check
+// release ownership without dispatching to the release core.
+type mcpIdentityKey struct{}
+
 // mcpLimits caps base64 publishing below the ticket-upload limits: large JSON
 // is held in memory several times, so MCP inline publishing stays at 100 MiB.
 func (a *apiServer) mcpLimits() apiConfig {
@@ -58,7 +62,7 @@ func (a *apiServer) mcpBodyLimit() int64 {
 	return min(int64(base64.StdEncoding.EncodedLen(int(n)))+mcpJSONOverhead, int64(mcpMaxBodyBytes))
 }
 
-func (a *apiServer) serveMCP(w http.ResponseWriter, r *http.Request, id string) {
+func (a *apiServer) serveMCP(w http.ResponseWriter, r *http.Request, id string, identity agentIdentity) {
 	u, _ := url.Parse(a.s.baseURL)
 	origins := r.Header.Values("Origin")
 	if len(origins) > 1 || len(origins) == 1 && origins[0] != u.Scheme+"://"+u.Host {
@@ -113,7 +117,8 @@ func (a *apiServer) serveMCP(w http.ResponseWriter, r *http.Request, id string) 
 		break
 	}
 	r.Body = &mcpReadCloser{Reader: probe, Closer: r.Body}
-	r = r.WithContext(context.WithValue(r.Context(), mcpRequestKey{}, r))
+	ctx := context.WithValue(r.Context(), mcpIdentityKey{}, identity)
+	r = r.WithContext(context.WithValue(ctx, mcpRequestKey{}, r))
 	a.mcpHandler.ServeHTTP(w, r)
 }
 
@@ -452,7 +457,11 @@ func (a *apiServer) mcpCall(ctx context.Context, name string, raw json.RawMessag
 		return mcpAPIResult(a.mcpDispatch(ctx, parent, "POST", "/_api/v1/uploads", bytes.NewReader(b), "application/json", "", mcpOutputBytes))
 	}
 	if name == "upload_from_computer" {
-		return a.mcpUploadPanel(raw)
+		identity, ok := ctx.Value(mcpIdentityKey{}).(agentIdentity)
+		if !ok {
+			return mcpFailure("missing authenticated request")
+		}
+		return a.mcpUploadPanel(raw, identity.Account)
 	}
 	if name == "set_expiry" {
 		var args struct {
@@ -751,7 +760,7 @@ func (w *archiveBudgetWriter) Write(p []byte) (int, error) {
 // mcpUploadPanel validates the options for the upload panel and tells the
 // model what happens next. It changes nothing: the panel itself calls
 // begin_upload with these options once the user picks a file.
-func (a *apiServer) mcpUploadPanel(raw json.RawMessage) *mcp.CallToolResult {
+func (a *apiServer) mcpUploadPanel(raw json.RawMessage, account string) *mcp.CallToolResult {
 	var args struct {
 		Label         string `json:"label,omitempty"`
 		SPA           bool   `json:"spa,omitempty"`
@@ -765,7 +774,7 @@ func (a *apiServer) mcpUploadPanel(raw json.RawMessage) *mcp.CallToolResult {
 	if _, err := makeAccessPolicy(args.Password); err != nil {
 		return mcpFailure("password must be 8 to 72 UTF-8 bytes without control characters")
 	}
-	if status, msg := a.checkLifecycle(uploadMetadata{Token: args.Token, ExpiresInDays: args.ExpiresInDays}); status != 0 {
+	if status, msg := a.checkLifecycle(uploadMetadata{Token: args.Token, ExpiresInDays: args.ExpiresInDays}, account); status != 0 {
 		return mcpFailure(msg)
 	}
 	return mcpResult(map[string]any{"status": "upload panel shown", "max_bytes": a.cfg.MaxUploadBytes,

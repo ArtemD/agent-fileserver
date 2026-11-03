@@ -14,8 +14,11 @@ the shared, in-process publisher; the release core is never routed publicly.
     Used only when no `Authorization` header is present.
 - No OAuth, query-token, local executable, legacy SSE, or anonymous tool access.
 
-Create/revoke named keys on the server as described in the README. A key manages
-the whole installation; it cannot administer keys or the operating system.
+Create/revoke named keys on the server as described in the README. A key
+manages the releases of its own account (`server_info` reports it); it cannot
+see other accounts' releases, administer keys or the operating system. A token
+of another account's release is answered like an unknown one:
+`release not found` (404).
 Supply the header on every request, including discovery/initialization. Store
 it in the client's secret connector settings, never a skill, tool arguments or
 the repo. Revocation takes effect on subsequent calls; admitted work may complete.
@@ -136,7 +139,7 @@ before the swap, so the new content is never briefly public.
 Because they can replace content, these three tools are annotated as
 destructive (`destructiveHint`), so a client may ask before it runs them.
 
-An unknown or deleted token returns `release not found` (404), and a malformed
+An unknown or deleted token, or another account's, returns `release not found` (404), and a malformed
 one `invalid release token` (400). Both are checked before any bytes are
 processed, so a wrong token costs nothing. `begin_upload` checks the token when
 it mints the ticket, and the `PUT` checks it again.
@@ -419,8 +422,9 @@ Lifecycle errors, none of which changes anything:
 
 - `invalid release token` (400): `token` is not the 22-character token of a
   release. Leave it out to publish a new release.
-- `release not found` (404): no active release has this token, because it was
-  deleted or expired. Publish again without `token`.
+- `release not found` (404): no active release of your account has this token,
+  because it was deleted or expired, or it belongs to another account (the two
+  are answered the same). Publish again without `token`.
 - `expires_in_days must be an integer from 0 to 3650` (400): on a publish,
   `begin_upload` or `set_expiry`. Use `0` for never.
 - `invalid set_expiry arguments`: `set_expiry` takes exactly `token` and
@@ -436,8 +440,8 @@ named entry and retry with the same `idempotency_key`.
 
 | Tool | Arguments |
 |---|---|
-| `server_info` | `{}`; includes `version` (the build version, such as a release tag, or `dev` for an unstamped build), `default_expiry_days`, a `disk` object (below) and an `upload` object: `max_bytes`, `max_extract_bytes`, `max_entries`, `ticket_seconds`, `max_pending_tickets` |
-| `list_releases` | `{}`; returns an object with `releases` and totals (below) |
+| `server_info` | `{}`; includes `agent` (the key's label), `account` (the account whose releases this key manages), `version` (the build version, such as a release tag, or `dev` for an unstamped build), `default_expiry_days`, a `disk` object (below) and an `upload` object: `max_bytes`, `max_extract_bytes`, `max_entries`, `ticket_seconds`, `max_pending_tickets` |
+| `list_releases` | `{}`; returns an object with `releases` and totals (below), for the caller's account only |
 | `release_info` | `{"token":"RELEASE_TOKEN"}` |
 | `download_release` | `{"token":"RELEASE_TOKEN"}` |
 | `delete_release` | `{"token":"RELEASE_TOKEN"}` |

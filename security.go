@@ -31,16 +31,23 @@ import (
 type agentIdentity struct {
 	ID    string `json:"-"`
 	Label string `json:"label"`
+	// Account owns the releases this key publishes; keys of one account
+	// share them and never see another account's releases.
+	Account string `json:"account"`
 }
 type tokenSummary struct {
 	Label     string     `json:"label"`
+	Account   string     `json:"account"`
 	CreatedAt time.Time  `json:"created_at"`
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 	RevokedAt *time.Time `json:"revoked_at,omitempty"`
 	Status    string     `json:"status"`
 }
 type tokenRecord struct {
-	Label     string     `json:"label"`
+	Label string `json:"label"`
+	// Account is empty for the default account (keys from before accounts
+	// existed), so a single-account registry stays readable by older versions.
+	Account   string     `json:"account,omitempty"`
 	Hash      string     `json:"hash"`
 	CreatedAt time.Time  `json:"created_at"`
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
@@ -72,6 +79,41 @@ func newTokenStore(path string) (*tokenStore, error) {
 		return nil, err
 	}
 	return t, nil
+}
+
+// defaultAccount owns every key and release from before accounts existed.
+const defaultAccount = "owner"
+
+// validAccount accepts 1 to 64 lowercase letters, digits, '.', '_' and '-',
+// starting with a letter or digit.
+func validAccount(name string) bool {
+	if name == "" || len(name) > 64 {
+		return false
+	}
+	for i, r := range name {
+		alnum := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
+		if !alnum && (i == 0 || (r != '.' && r != '_' && r != '-')) {
+			return false
+		}
+	}
+	return true
+}
+
+// accountOf maps a stored account field to its account: empty is the default.
+func accountOf(stored string) string {
+	if stored == "" {
+		return defaultAccount
+	}
+	return stored
+}
+
+// storedAccount is the inverse of accountOf, so default-account records keep
+// their pre-account form.
+func storedAccount(account string) string {
+	if account == defaultAccount {
+		return ""
+	}
+	return account
 }
 
 func validLabel(label string) bool {
@@ -219,7 +261,7 @@ func (t *tokenStore) read() (tokenRegistry, error) {
 	labels, hashes := map[string]bool{}, map[string]bool{}
 	for _, r := range reg.Tokens {
 		hash, e := hex.DecodeString(r.Hash)
-		if !validLabel(r.Label) || labels[r.Label] || e != nil || len(hash) != sha256.Size || r.Hash != strings.ToLower(r.Hash) || hashes[r.Hash] || r.CreatedAt.IsZero() {
+		if !validLabel(r.Label) || labels[r.Label] || (r.Account != "" && (!validAccount(r.Account) || r.Account == defaultAccount)) || e != nil || len(hash) != sha256.Size || r.Hash != strings.ToLower(r.Hash) || hashes[r.Hash] || r.CreatedAt.IsZero() {
 			return reg, fmt.Errorf("invalid token registry record")
 		}
 		if (r.ExpiresAt != nil && !r.ExpiresAt.After(r.CreatedAt)) || (r.RevokedAt != nil && r.RevokedAt.Before(r.CreatedAt)) {
@@ -242,7 +284,7 @@ func (t *tokenStore) Authenticate(raw string, now time.Time) (agentIdentity, err
 		stored, _ := hex.DecodeString(r.Hash)
 		match := subtle.ConstantTimeCompare(stored, digest[:])
 		if match == 1 && r.RevokedAt == nil && (r.ExpiresAt == nil || now.Before(*r.ExpiresAt)) {
-			identity = agentIdentity{ID: identityID(stored), Label: r.Label}
+			identity = agentIdentity{ID: identityID(stored), Label: r.Label, Account: accountOf(r.Account)}
 			found = true
 		}
 	}
@@ -281,7 +323,7 @@ func summarizeToken(r tokenRecord, now time.Time) tokenSummary {
 	} else if r.ExpiresAt != nil && !now.Before(*r.ExpiresAt) {
 		status = "expired"
 	}
-	return tokenSummary{Label: r.Label, CreatedAt: r.CreatedAt, ExpiresAt: r.ExpiresAt, RevokedAt: r.RevokedAt, Status: status}
+	return tokenSummary{Label: r.Label, Account: accountOf(r.Account), CreatedAt: r.CreatedAt, ExpiresAt: r.ExpiresAt, RevokedAt: r.RevokedAt, Status: status}
 }
 func (t *tokenStore) List() ([]tokenSummary, error) {
 	reg, err := t.read()
@@ -326,9 +368,12 @@ func (t *tokenStore) writerLock() (func(), error) {
 	}
 	return func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN); _ = f.Close() }, nil
 }
-func (t *tokenStore) Create(label string, days int) (tokenSummary, string, error) {
+func (t *tokenStore) Create(label, account string, days int) (tokenSummary, string, error) {
 	if !validLabel(label) || days < 0 || days > 365000 {
 		return tokenSummary{}, "", fmt.Errorf("invalid token label or lifetime")
+	}
+	if !validAccount(account) {
+		return tokenSummary{}, "", fmt.Errorf("invalid account: use 1 to 64 lowercase letters, digits, '.', '_' or '-', starting with a letter or digit")
 	}
 	unlock, err := t.writerLock()
 	if err != nil {
@@ -354,7 +399,7 @@ func (t *tokenStore) Create(label string, days int) (tokenSummary, string, error
 	bearer := base64.RawURLEncoding.EncodeToString(raw)
 	hash := sha256.Sum256([]byte(bearer))
 	now := time.Now().UTC()
-	r := tokenRecord{Label: label, Hash: hex.EncodeToString(hash[:]), CreatedAt: now}
+	r := tokenRecord{Label: label, Account: storedAccount(account), Hash: hex.EncodeToString(hash[:]), CreatedAt: now}
 	if days > 0 {
 		expiry := now.AddDate(0, 0, days)
 		r.ExpiresAt = &expiry
