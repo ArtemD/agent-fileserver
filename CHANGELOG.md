@@ -10,6 +10,16 @@ Each release on GitHub also lists every commit and the issues it closed.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-11-03
+
+### Changed
+
+- The service image and the one-shot `init` container run on Alpine 3.24.3
+  (was 3.24.2). The upgrade is the usual rebuild; nothing else to do
+  ([#14](https://github.com/ArtemD/agent-fileserver/pull/14),
+  [#15](https://github.com/ArtemD/agent-fileserver/pull/15),
+  [#33](https://github.com/ArtemD/agent-fileserver/issues/33)).
+
 ## [0.5.0] - 2026-11-03
 
 ### Added
@@ -193,7 +203,8 @@ Each release on GitHub also lists every commit and the issues it closed.
   passwords, per-agent keys administered from the host, and hardened
   containers.
 
-[Unreleased]: https://github.com/ArtemD/agent-fileserver/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/ArtemD/agent-fileserver/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/ArtemD/agent-fileserver/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/ArtemD/agent-fileserver/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/ArtemD/agent-fileserver/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/ArtemD/agent-fileserver/compare/v0.4.0...v0.4.1
