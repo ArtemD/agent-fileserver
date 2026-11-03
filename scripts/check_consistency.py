@@ -60,6 +60,11 @@ for path in tracked():
         if Path(path).name not in testing:
             fail(f"{path} is not mentioned in docs/TESTING.md")
 
+# 2a2. Touch sizes shared by every panel (AGENTS.md: panels work on a phone).
+base_css = read("ui/base.css")
+if not re.search(r"@media \(pointer: coarse\)[^@]*min-height: 44px[^@]*font-size: 16px", base_css, re.S):
+    fail("ui/base.css must keep the @media (pointer: coarse) block: 44px controls, 16px form fields")
+
 # 2b. MCP Apps panels: every ui/*.html is registered in ui.go, has a browser test
 # and is documented; browser tests are documented and run in CI. Panel code
 # never uses HTML-injection sinks or loads anything from another origin.
@@ -73,10 +78,22 @@ for path in tracked():
             fail(f"{path} is not registered as a panel in ui.go")
         if f"tests/ui_{Path(path).stem}.test.mjs" not in tracked():
             fail(f"{path} has no browser test tests/ui_{Path(path).stem}.test.mjs")
+        else:
+            # Panels work on a phone: the browser test walks the panel's states
+            # at every PHONES width through expectPhoneFit (AGENTS.md).
+            ui_test = read(f"tests/ui_{Path(path).stem}.test.mjs")
+            if "expectPhoneFit(" not in ui_test or "PHONES" not in ui_test:
+                fail(f"tests/ui_{Path(path).stem}.test.mjs must check {path} at every PHONES width with expectPhoneFit")
+        if 'name="viewport" content="width=device-width, initial-scale=1"' not in read(path):
+            fail(f"{path} needs <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"> for phones")
         if f"ui/{name}" not in read("docs/MCP.md") and name not in read("docs/MCP.md"):
             fail(f"{path} is not documented in docs/MCP.md")
     if path.startswith("ui/") and path.endswith((".html", ".js", ".css")):
         text = read(path)
+        # Native dialogs are blocked in sandboxed frames and clumsy on phones;
+        # a confirm step is an inline button the phone check can measure.
+        if path.endswith((".html", ".js")) and re.search(r"(?<![\w.$])(?:window\.)?(?:alert|confirm|prompt)\s*\(|window\.(?:alert|confirm|prompt)\b", text):
+            fail(f"{path} uses a native alert/confirm/prompt dialog; use an inline confirm step")
         for sink in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "new Function",
                      "javascript:", "@import"):
             if sink in text:

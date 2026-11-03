@@ -121,6 +121,15 @@ A change is not finished until **all** of these are updated in the same commit:
 - Panels render tool data as text only (no `innerHTML`, `eval` or inline event
   attributes), use a URL only when it is under the base URL, load nothing
   external, and act only by calling existing tools through the host.
+- Panels work on a phone (the Claude mobile app shows them). Every panel, every
+  state of it and every confirm step or dialog fits 320px and 375px frames with
+  no sideways scroll; on touch screens controls are at least 44×44px and form
+  fields use 16px text; nothing needs hover or drag-and-drop alone; a confirm
+  step is an inline button, never `alert`/`confirm`/`prompt`. A new panel or
+  state is not done until its browser test walks it at every `PHONES` width
+  through `expectPhoneFit` (`tests/ui_host.mjs`); `check_consistency.py`
+  enforces the test, the viewport tag and the shared touch sizes in
+  `ui/base.css`.
 - Fail closed: a missing or invalid access policy denies access; reject
   traversal, links, special files, secrets and limit violations.
 - Redact secrets: never log request bodies, passwords, uploaded content, raw MCP

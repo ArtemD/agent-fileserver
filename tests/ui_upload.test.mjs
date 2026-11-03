@@ -5,7 +5,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { openPanel, textResult, run, BASE, expectContentSize } from "./ui_host.mjs";
+import { openPanel, textResult, run, BASE, expectContentSize, expectPhoneFit, PHONES } from "./ui_host.mjs";
 
 const tmp = mkdtempSync(join(tmpdir(), "ui-upload-"));
 const sha = (b) => createHash("sha256").update(b).digest("hex");
@@ -20,10 +20,11 @@ function makeFile(name, bytes) {
 }
 
 // setup opens the panel with a mock begin_upload and a mock PUT endpoint.
-async function setup({ begin, put, max = MAX, options } = {}) {
+async function setup({ begin, put, max = MAX, options, phone = 0 } = {}) {
   const begins = [];
   let n = 0;
   const panel = await openPanel("upload.html", {
+    phone,
     onCall(name, args) {
       begins.push({ name, args });
       if (begin) return begin(args, ++n);
@@ -351,6 +352,42 @@ const tests = {
     await publishBtn(f).waitFor();
     assert.equal(await f.locator("#result").count(), 0);
     await t.panel.close();
+  },
+
+  "fits a phone and can be used by touch in every state": async () => {
+    const long = "my-portfolio-website-export-with-a-very-long-name-2026.zip";
+    for (const phone of PHONES) {
+      let put = { status: 201, json: releaseView({ label: long, url: BASE + "/" + TOKEN22 + "/" + long }) };
+      const t = await setup({ phone, put: () => put });
+      const f = t.panel.frame;
+      await expectPhoneFit(t.panel, "pick");
+      // A phone has no drag and drop: the visible button opens the picker.
+      const chooser = t.panel.page.waitForEvent("filechooser");
+      await f.getByRole("button", { name: "Choose file" }).tap();
+      await (await chooser).setFiles(makeFile(long, zipBytes));
+      await publishBtn(f).waitFor();
+      await expectPhoneFit(t.panel, "ready, with the archive option");
+      await f.locator("label.check").tap();
+      assert.equal(await f.locator("#one").isChecked(), true, "the checkbox row toggles by tap");
+      await f.locator("label.check").tap();
+      put = { hang: true };
+      await publishBtn(f).tap();
+      await f.getByRole("button", { name: "Cancel" }).waitFor();
+      await expectPhoneFit(t.panel, "uploading");
+      await f.getByRole("button", { name: "Cancel" }).tap();
+      await publishBtn(f).waitFor();
+      put = { status: 413, json: { error: "file too large", hint: "The limit is 50 MB. Split the site or ask the owner to raise the limit." } };
+      await publishBtn(f).tap();
+      await f.getByText("file too large").first().waitFor();
+      await expectPhoneFit(t.panel, "failed");
+      put = { status: 201, json: releaseView({ label: long, url: BASE + "/" + TOKEN22 + "/" + long }) };
+      await f.getByRole("button", { name: "Try again" }).tap();
+      await f.locator("#result").waitFor();
+      await expectPhoneFit(t.panel, "done");
+      // The refused PUT above is logged by the browser itself; nothing else may be.
+      t.panel.errors.splice(0, t.panel.errors.length, ...t.panel.errors.filter((e) => !/status of 413/.test(e)));
+      await finish(t);
+    }
   },
 
   "drag and drop selects a file; more than one file is refused": async () => {

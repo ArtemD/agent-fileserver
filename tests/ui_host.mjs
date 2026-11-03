@@ -18,6 +18,13 @@ export const BASE = "https://files.example.com";
 // FRAME is the panel iframe's size: taller than any panel's first view, so a
 // panel that reported the frame instead of its content would show up.
 export const FRAME = { width: 760, height: 900 };
+// PHONES are the frame widths a phone gives a panel: a small phone (320px)
+// and a common one (375px). TOUCH is the smallest tap target, in CSS pixels
+// (WCAG 2.5.5, Apple's 44pt), and INPUT_FONT the smallest form-control font
+// size that keeps iOS from zooming the page when a field is focused.
+export const PHONES = [320, 375];
+export const TOUCH = 44;
+export const INPUT_FONT = 16;
 
 // Every browser a test opens, so run() can close them even when a test throws.
 const openBrowsers = new Set();
@@ -67,10 +74,14 @@ const HOST_PAGE = `<!doctype html><html><body style="margin:0">
 
 // openPanel launches (or reuses) a browser and returns a controller for one panel.
 // onCall(name, args) returns a CallToolResult (use textResult).
-export async function openPanel(file, { onCall, hostContext = { theme: "light" }, base = BASE } = {}) {
+// phone: a width from PHONES opens it like a phone does: a touch screen with a
+// coarse pointer, a mobile viewport and the frame that wide.
+export async function openPanel(file, { onCall, hostContext = { theme: "light" }, base = BASE, phone = 0 } = {}) {
   const browser = await chromium.launch();
   openBrowsers.add(browser);
-  const context = await browser.newContext();
+  const context = await browser.newContext(phone
+    ? { viewport: { width: phone, height: 800 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 }
+    : {});
   const page = await context.newPage();
   const errors = [];
   page.on("pageerror", (e) => errors.push(String(e)));
@@ -83,6 +94,9 @@ export async function openPanel(file, { onCall, hostContext = { theme: "light" }
   });
   await page.setContent(HOST_PAGE);
   await page.evaluate((ctx) => { window.__hostContext = ctx; }, hostContext);
+  if (phone) {
+    await page.evaluate((w) => { document.getElementById("app").style.width = w + "px"; }, phone);
+  }
   const html = compose(file, base);
   await page.evaluate((h) => { document.getElementById("app").srcdoc = h; }, html);
   const frame = await (await page.waitForSelector("#app")).contentFrame();
@@ -148,6 +162,63 @@ export async function expectContentSize(panel) {
   await panel.settle();
   assert.equal((await panel.sizes()).length, sizes.length, "resize() with nothing changed sends nothing");
   return last;
+}
+
+// phoneProblems lists what breaks on a phone in the panel as it is now: a
+// sideways scroll, an element or a line of text outside the frame, a control
+// smaller than TOUCH in either direction, or a form field whose font is below
+// INPUT_FONT. Visually hidden elements (clipped, 1px) and the hidden file input
+// are skipped; a link inside running text is exempt from the size rule, as in
+// WCAG 2.5.8. An empty list means the panel passes.
+export function phoneProblems(panel) {
+  return panel.frame.evaluate(({ TOUCH, INPUT_FONT }) => {
+    const out = [];
+    const root = document.documentElement;
+    const width = root.clientWidth;
+    const name = (n) => n.tagName.toLowerCase() + (n.id ? "#" + n.id : "") +
+      (n.className && typeof n.className === "string" ? "." + n.className.trim().split(/\s+/).join(".") : "") +
+      ' "' + (n.textContent || n.getAttribute("aria-label") || "").trim().slice(0, 30) + '"';
+    const shown = (n) => {
+      for (let x = n; x && x !== document.body; x = x.parentElement) {
+        const cs = getComputedStyle(x);
+        if (cs.display === "none" || cs.visibility === "hidden" || x.hidden) return false;
+        if (cs.clip !== "auto" && cs.position === "absolute") return false;
+      }
+      const r = n.getBoundingClientRect();
+      return r.width > 1 && r.height > 1;
+    };
+    if (root.scrollWidth > width) out.push(`page scrolls sideways: ${root.scrollWidth}px wide in a ${width}px frame`);
+    for (const n of document.body.querySelectorAll("*")) {
+      if (n.tagName === "SCRIPT" || n.tagName === "STYLE" || !shown(n)) continue;
+      const r = n.getBoundingClientRect();
+      if (r.left < -0.5 || r.right > width + 0.5) out.push(`${name(n)} is outside the frame (${Math.round(r.left)}..${Math.round(r.right)} of ${width})`);
+      const control = n.matches("button, select, textarea, input:not([type=hidden]):not([type=checkbox]):not([type=radio]), [role=button], label.check") ||
+        (n.tagName === "A" && !n.closest("p, li, .mono, .url, .muted, .hint"));
+      if (control && (r.height < TOUCH - 0.5 || r.width < TOUCH - 0.5)) {
+        out.push(`${name(n)} is ${Math.round(r.width)}x${Math.round(r.height)}, below the ${TOUCH}px tap target`);
+      }
+      if (n.matches("select, textarea, input:not([type=checkbox]):not([type=radio])") && parseFloat(getComputedStyle(n).fontSize) < INPUT_FONT) {
+        out.push(`${name(n)} has a ${getComputedStyle(n).fontSize} font; iOS zooms in below ${INPUT_FONT}px`);
+      }
+    }
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    for (let t = walker.nextNode(); t; t = walker.nextNode()) {
+      if (!t.textContent.trim() || !t.parentElement || !shown(t.parentElement)) continue;
+      const range = document.createRange();
+      range.selectNodeContents(t);
+      for (const r of range.getClientRects()) {
+        if (r.right > width + 0.5) { out.push(`text "${t.textContent.trim().slice(0, 30)}" runs past the frame edge (${Math.round(r.right)} of ${width})`); break; }
+      }
+    }
+    return out;
+  }, { TOUCH, INPUT_FONT });
+}
+
+// expectPhoneFit asserts phoneProblems is empty, with what to fix if not.
+export async function expectPhoneFit(panel, state) {
+  await panel.settle();
+  const problems = await phoneProblems(panel);
+  assert.deepEqual(problems, [], `${state} at ${await panel.frame.evaluate(() => document.documentElement.clientWidth)}px`);
 }
 
 // run executes named async tests sequentially and exits non-zero on failure.

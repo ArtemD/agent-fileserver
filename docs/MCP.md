@@ -325,6 +325,11 @@ How the panels work:
 - Their buttons call existing tools through the host, so the same key, audit
   log, rate limits and checks apply. A panel adds no capability a tool call does
   not have. Delete needs two clicks.
+- They work on a phone: every state fits a 320px frame without sideways
+  scrolling, and on touch screens buttons, fields and menus are at least 44px
+  with 16px field text (so iOS does not zoom). The upload panel has a Choose
+  file button, since phones have no drag and drop. Confirm steps are inline
+  buttons, not browser dialogs.
 - They report their content size to the host with
   `ui/notifications/size-changed` (measured like the ext-apps SDK, with the root
   set to `max-content` for the read), at most once per frame and only when the

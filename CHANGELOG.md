@@ -10,6 +10,16 @@ Each release on GitHub also lists every commit and the issues it closed.
 
 ## [Unreleased]
 
+### Fixed
+
+- Panels are usable by touch. On phones and tablets every button, field and
+  menu in the release card, the releases dashboard and the upload panel is now
+  at least 44px (they were 25 to 32px, the dashboard's row buttons the
+  smallest), the dashboard's row buttons sit further apart, and the filter and
+  sort fields use 16px text so iOS no longer zooms the page when they are
+  tapped. Desktop sizes are unchanged. Nothing to do for clients or operators
+  ([#31](https://github.com/ArtemD/agent-fileserver/issues/31)).
+
 ## [0.4.1] - 2026-11-02
 
 ### Fixed

@@ -1,7 +1,7 @@
 // Browser tests for the release card panel (ui/release.html), run with
 // `node tests/ui_release.test.mjs` against the mock MCP Apps host.
 import assert from "node:assert/strict";
-import { openPanel, textResult, run, BASE, expectContentSize } from "./ui_host.mjs";
+import { openPanel, textResult, run, BASE, expectContentSize, expectPhoneFit, PHONES } from "./ui_host.mjs";
 
 const TOKEN = "AbCdEfGhIjKlMnOpQrStUv";
 const DAY = 86400000;
@@ -33,6 +33,33 @@ const btn = (panel, name) => panel.frame.getByRole("button", { name, exact: true
 const waitText = (panel, s) => panel.frame.getByText(s).first().waitFor({ timeout: 5000 });
 
 await run("ui_release", {
+  "fits a phone and can be used by touch in every state": async () => {
+    const long = "quarterly-report-final-version-without-any-spaces-at-all.pdf";
+    for (const phone of PHONES) {
+      let answer = textResult({ error: "rate limited", hint: "Wait a minute, then try again. Retrying is safe." }, true);
+      await withPanel({ phone, onCall: () => answer }, async (p) => {
+        await expectPhoneFit(p, "waiting");
+        await p.toolResult(textResult(view({ original_filename: long, url: BASE + "/" + TOKEN + "/" + long, protected: true, username: "viewer",
+          updated_at: new Date().toISOString(), expires_at: new Date(Date.now() + 3 * DAY).toISOString() })));
+        await waitText(p, "Password: viewer");
+        await expectPhoneFit(p, "protected release with a long name");
+        await btn(p, "Keep forever").tap();
+        await waitText(p, "rate limited");
+        await expectPhoneFit(p, "a failed action with its hint");
+        answer = textResult(view({ expires_at: null }));
+        await btn(p, "Keep forever").tap();
+        await waitText(p, "Never expires");
+        await expectPhoneFit(p, "after a successful action");
+        await p.toolResult(textResult(view({ url: "https://evil.example.net/" + long })));
+        await waitText(p, "link withheld");
+        await expectPhoneFit(p, "link withheld");
+        await p.toolResult(textResult({ error: "release not found", hint: "The token is wrong or the release was deleted. Call list_releases." }, true));
+        await waitText(p, "release not found");
+        await expectPhoneFit(p, "error result");
+      });
+    }
+  },
+
   "reports its content height, grows and shrinks with it, never resends a size": () => withPanel({}, async (p) => {
     const waiting = await expectContentSize(p);
     await p.toolResult(textResult(view({ label: "My site" })));

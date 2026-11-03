@@ -48,3 +48,13 @@ input, select { font: inherit; color: var(--fs-text); background: var(--fs-bg); 
 .badge.danger { color: var(--fs-danger); border-color: currentColor; }
 .error { color: var(--fs-danger); }
 .hint { color: var(--fs-text-2); font-size: 13px; }
+/* Touch screens (a phone or tablet in the Claude app): every control is at
+   least 44px in both directions (WCAG 2.5.5, Apple's 44pt) so a finger hits
+   it, and form fields use 16px text, below which iOS zooms the page on focus.
+   Desktop sizes are untouched. tests/ui_host.mjs expectPhoneFit checks this. */
+@media (pointer: coarse) {
+  button, select, input:not([type="checkbox"]):not([type="radio"]):not([type="file"]) { min-height: 44px; min-width: 44px; }
+  input, select, textarea { font-size: 16px; }
+  label.check { min-height: 44px; }
+  input[type="checkbox"], input[type="radio"] { width: 20px; height: 20px; margin: 0; }
+}

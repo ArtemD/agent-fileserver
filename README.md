@@ -159,6 +159,8 @@ Clients that support [MCP Apps](https://github.com/modelcontextprotocol/ext-apps
 interactive panel for some tools. You connect the same way and nothing needs
 configuring: panels appear automatically. The first time, Claude asks you to
 allow the app. Clients without MCP Apps get the same text results as before.
+Every panel is built and tested for phones too: it fits a small screen without
+sideways scrolling, and buttons and fields are sized for a finger.
 
 Where panels show: regular Claude chats on the web, desktop and mobile. Claude
 Code and agent-mode sessions (Claude working with its own file and shell tools)

@@ -173,6 +173,17 @@ it outside the repository as above (CI uses `$RUNNER_TEMP/pw`). Use another
   open, copy, keep forever, delete only after a confirming second click, and the
   phone-width card layout (375px frame: no sideways scroll, every cell and
   button inside the frame, the table back at 760px).
+- All three walk every state on a phone: `openPanel(file, { phone })` opens the
+  panel with touch, a coarse pointer and a mobile viewport in a frame from
+  `PHONES` (320 and 375px), and `expectPhoneFit` fails on a sideways scroll, an
+  element or a line of text outside the frame, a control under 44×44px (`TOUCH`)
+  or a form field under 16px (`INPUT_FONT`, below which iOS zooms). The card
+  covers a long unbroken name, a failed and a successful action, the withheld
+  link and an error; the dashboard its list, filter, the delete confirmation, a
+  row error, empty and error; the upload panel picking by tap through the file
+  chooser (no drag and drop on a phone), the archive checkbox, uploading,
+  failed and done. Controls are tapped, not clicked. `check_consistency.py`
+  fails if a panel's test skips this.
 - `ui_upload.test.mjs`: pick or drop a file, SHA-256, the `begin_upload` call
   with the tool's options, the `PUT` with progress, the shown release, the
   message to the agent, archives as sites versus *Publish as one file*, and

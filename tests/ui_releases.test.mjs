@@ -1,7 +1,7 @@
 // Browser tests for the releases dashboard panel (ui/releases.html, issue #24).
 // Run: node tests/ui_releases.test.mjs (needs playwright + Chromium, see ui_host.mjs).
 import assert from "node:assert/strict";
-import { openPanel, textResult, run, BASE, expectContentSize } from "./ui_host.mjs";
+import { openPanel, textResult, run, BASE, expectContentSize, expectPhoneFit, PHONES } from "./ui_host.mjs";
 
 const DAY = 86400000;
 const iso = (offsetDays) => new Date(Date.now() + offsetDays * DAY).toISOString();
@@ -46,6 +46,34 @@ async function finish(panel) {
 }
 
 await run("ui_releases", {
+  "fits a phone and can be used by touch in every state, including the delete confirmation": async () => {
+    const long = "quarterly-report-final-version-without-any-spaces-at-all.pdf";
+    for (const phone of PHONES) {
+      const panel = await openPanel("releases.html", { phone, onCall: () => textResult({ error: "rate limited", hint: "Wait a minute, then try again." }, true) });
+      opened.push(panel);
+      await expectPhoneFit(panel, "waiting");
+      await panel.toolResult(listResult([view(1, { label: long, protected: true, expires_at: iso(3) }), ...sample().slice(1)], { truncated: true }));
+      await panel.frame.waitForSelector("#rows tr");
+      await expectPhoneFit(panel, "list with a long name and the truncation note");
+      await panel.frame.locator("#filter").tap();
+      await panel.frame.locator("#filter").fill("zzz-no-match");
+      await expectPhoneFit(panel, "filter with no match");
+      await panel.frame.locator("#filter").fill("");
+      const row = rowFor(panel, tok(1));
+      await row.getByRole("button", { name: "Delete" }).tap();
+      await row.getByRole("button", { name: "Confirm delete" }).waitFor();
+      await expectPhoneFit(panel, "delete confirmation");
+      await row.getByRole("button", { name: "Confirm delete" }).tap();
+      await row.locator(".rowerr").waitFor();
+      await expectPhoneFit(panel, "row error");
+      await panel.toolResult(listResult([]));
+      await expectPhoneFit(panel, "empty");
+      await panel.toolResult(textResult({ error: "unauthorized", hint: "Check the key." }, true));
+      await expectPhoneFit(panel, "error result");
+      await finish(panel);
+    }
+  },
+
   "reports its content height, grows and shrinks with it, never resends a size": async () => {
     const panel = await open(null);
     const waiting = await expectContentSize(panel);
