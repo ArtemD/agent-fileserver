@@ -24,7 +24,7 @@ x-service-env: &service-env
 services:
   # One-shot: create host directories with the ownership the services expect.
   init:
-    image: alpine:3.24.2
+    image: alpine:3.24.3
     user: "0:0"
     network_mode: none
     cap_drop: [ALL]
