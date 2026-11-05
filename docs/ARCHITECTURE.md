@@ -248,6 +248,14 @@ protects the entire release, assets, ranges and SPA routes included. API keys
 must never be sent as visitor credentials. Password updates invalidate cached
 authorization decisions. Already-admitted transfers may finish after a change.
 
+Refusals of release requests (401 without valid visitor credentials, 404 for an
+unknown or expired release, 429 for the visitor rate limits) are written for a
+person, not an agent: a small static HTML page with a heading, the hint and the
+request ID, escaped, with `Content-Security-Policy: default-src 'none'` and no
+scripts. The status stays 401 with `WWW-Authenticate: Basic`: browsers ask for
+a password, and send one (even from a `user:password@` URL), only in answer to
+that challenge, so a 403 or a redirect would lock every browser out.
+
 Public URLs are unlisted, not private. Protected responses are `private,
 no-store`; public content may be cached but must be revalidated
 (`public, no-cache`, with ETag, so a cheap 304 when nothing changed). Releases

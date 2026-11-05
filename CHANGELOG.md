@@ -10,6 +10,14 @@ Each release on GitHub also lists every commit and the issues it closed.
 
 ## [Unreleased]
 
+### Fixed
+
+- Visitors who cancel the password prompt of a protected release, open an
+  unknown or expired link, or hit the visitor sign-in limits now get a short,
+  readable HTML page instead of a raw JSON API error. Status codes and the
+  browser's password prompt are unchanged; nothing to do on upgrade
+  ([#34](https://github.com/ArtemD/agent-fileserver/issues/34)).
+
 ## [0.5.1] - 2026-11-03
 
 ### Changed

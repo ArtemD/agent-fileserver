@@ -256,7 +256,9 @@ published before this feature never expire. Details:
 ## Safety and limits
 
 - URLs are **unlisted but public** by default; anyone with the link can open it.
-  A visitor password protects the whole release, assets included.
+  A visitor password protects the whole release, assets included. The browser
+  asks for it (username `viewer`); a visitor who cancels, and anyone opening an
+  unknown or expired link, gets a short plain page, not an API error.
 - Static output only — build/export elsewhere. No backend, SSR or uploaded commands.
   Files are served by path; query strings (`?utm_source=…`, page state) are ignored.
 - Through MCP (base64): 100 MiB archive and extracted size, 5,000 objects. Your

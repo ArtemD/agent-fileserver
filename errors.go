@@ -1,6 +1,7 @@
 package main
 
 import (
+	"html"
 	"net/http"
 )
 
@@ -15,6 +16,42 @@ type apiErrorBody struct {
 	Reason    string `json:"reason,omitempty"`
 	Hint      string `json:"hint,omitempty"`
 	RequestID string `json:"request_id,omitempty"`
+}
+
+// visitorError answers a person in a browser (a refused release request from
+// Caddy's forward_auth) with a small readable page instead of JSON. Status,
+// headers and the stable error string are the same as apiError's; the page
+// shows a heading, the hint and the request ID. All text is static and
+// escaped; the page loads nothing and runs nothing.
+func visitorError(w http.ResponseWriter, status int, id, msg string) {
+	if status == 429 {
+		w.Header().Set("Retry-After", "60")
+	}
+	title := visitorTitles[status]
+	if title == "" {
+		title = "Not available"
+	}
+	h := w.Header()
+	h.Set("Content-Type", "text/html; charset=utf-8")
+	h.Set("Cache-Control", "no-store")
+	h.Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+	w.WriteHeader(status)
+	_, _ = w.Write([]byte(`<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex"><title>` + html.EscapeString(title) + `</title>
+<style>:root{color-scheme:light dark}body{margin:0;font:16px/1.5 system-ui,sans-serif;background:Canvas;color:CanvasText}
+main{max-width:34rem;margin:15vh auto 0;padding:0 16px}h1{font-size:1.5rem;margin:0 0 .5rem}p{margin:0 0 1rem}
+small{opacity:.6;overflow-wrap:anywhere}</style></head>
+<body><main><h1>` + html.EscapeString(title) + `</h1><p>` + html.EscapeString(errorHints[msg]) + `</p>
+<p><small>Request ID: ` + html.EscapeString(id) + `</small></p></main></body></html>
+`))
+}
+
+// Headings of the visitor pages, by status.
+var visitorTitles = map[int]string{
+	401: "Password required",
+	404: "Link not found",
+	429: "Please try again shortly",
 }
 
 func apiError(w http.ResponseWriter, status int, id, msg string) {
@@ -142,7 +179,10 @@ var errorHints = map[string]string{
 	"could not update release policy":               hintServer + " Call release_info to see the release's current protection before retrying.",
 	"new viewer login attempts temporarily limited": "Too many viewer sign-ins for this release from your network. Wait a minute and try again.",
 	"viewer authentication busy; retry shortly":     "The server is checking many passwords at once. Wait a few seconds and reload.",
-	"viewer authentication required":                "This release is password protected. Sign in with username viewer and the password the publisher gave you.",
+	"viewer authentication required": "This link is protected with a password. Reload the page and sign in with the username viewer " +
+		"and the password you were given. If you do not have the password, ask the person who sent you the link.",
+	"link not found": "This link does not exist, has expired or was removed. Check that you copied the whole link, " +
+		"or ask the person who sent it for a new one.",
 
 	// Publishing.
 	"publish attempt limit reached": "This agent key used all publish attempts for the window (server_info publish_limit and publish_window_seconds); " +

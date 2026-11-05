@@ -1202,22 +1202,21 @@ func (a *apiServer) authorize(w http.ResponseWriter, r *http.Request, id string)
 	}
 	token, ok := authorizedURIToken(r.Header.Get("X-Forwarded-Uri"))
 	if !ok {
-		apiError(w, 404, id, "not found")
+		visitorError(w, 404, id, "link not found")
 		return
 	}
 	// Expired releases are refused from the instant they expire, whether or
 	// not the sweeper has deleted them yet.
 	if m, e := a.s.info(token); e != nil || m.expired(time.Now()) {
-		apiError(w, 404, id, "not found")
+		visitorError(w, 404, id, "link not found")
 		return
 	}
 	p, e := a.s.policy(token)
 	if e != nil {
-		apiError(w, 404, id, "not found")
+		visitorError(w, 404, id, "link not found")
 		return
 	}
 	if p.Protected {
-
 		key := "viewer-guess:" + clientIP(r) + ":" + token
 		username, password, basicOK := "", "", false
 		if len(r.Header.Get("Authorization")) <= 1024 {
@@ -1241,7 +1240,7 @@ func (a *apiServer) authorize(w http.ResponseWriter, r *http.Request, id string)
 				// bcrypt; a shared-IP attacker may temporarily delay NEW logins for this
 				// release, but cannot knock out cached authenticated asset requests.
 				if !a.rate(key, 10, time.Minute, true) {
-					apiError(w, 429, id, "new viewer login attempts temporarily limited")
+					visitorError(w, 429, id, "new viewer login attempts temporarily limited")
 					return
 				}
 				select {
@@ -1249,7 +1248,7 @@ func (a *apiServer) authorize(w http.ResponseWriter, r *http.Request, id string)
 					valid = p.Check(username, password)
 					<-a.bcryptJobs
 				default:
-					apiError(w, 429, id, "viewer authentication busy; retry shortly")
+					visitorError(w, 429, id, "viewer authentication busy; retry shortly")
 					return
 				}
 				if valid {
@@ -1259,7 +1258,7 @@ func (a *apiServer) authorize(w http.ResponseWriter, r *http.Request, id string)
 		}
 		if !valid {
 			w.Header().Set("WWW-Authenticate", `Basic realm="fserver-`+token+`", charset="UTF-8"`)
-			apiError(w, 401, id, "viewer authentication required")
+			visitorError(w, 401, id, "viewer authentication required")
 			return
 		}
 

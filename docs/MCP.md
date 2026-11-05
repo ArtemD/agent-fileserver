@@ -86,7 +86,10 @@ fallback.
 
 **Public Internet by default.** Add `"password": "YOUR_VISITOR_PASSWORD"` to the
 same publish call to protect it before activation. Visitor username is `viewer`;
-passwords are 8–72 UTF-8 bytes. This is not the management key.
+passwords are 8–72 UTF-8 bytes. This is not the management key. A visitor
+without the password gets the browser's sign-in prompt and, on cancel, a plain
+"Password required" page (status 401); an unknown or expired link gets a plain
+"Link not found" page (404). Neither is JSON.
 
 On a lost response, retry with the **same idempotency key and exact bytes and
 metadata** (including `token` and `expires_in_days`). Changed payloads conflict.

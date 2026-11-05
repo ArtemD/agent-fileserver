@@ -469,6 +469,19 @@ class MCPLive(unittest.TestCase):
         self.tool("set_password", {"token": token, "password": password})
         check(self.request("/" + token + "/assets/style.css", anonymous=True)[0] == 401,
               "protected assets unexpectedly public")
+        # A visitor without the password gets the browser's sign-in prompt and,
+        # if they cancel it, a readable page through Caddy, never JSON.
+        status, headers, page = self.request("/" + token + "/", anonymous=True)
+        check(status == 401 and headers.get("www-authenticate", "").startswith('Basic realm="fserver-'),
+              "protected release did not ask the browser for the password")
+        check(headers.get("content-type") == "text/html; charset=utf-8"
+              and "default-src 'none'" in headers.get("content-security-policy", "")
+              and b"<h1>Password required</h1>" in page and b'"error"' not in page,
+              "visitor refusal is not a plain HTML page")
+        status, headers, page = self.request("/" + secrets.token_urlsafe(16) + "/", anonymous=True)
+        check(status == 404 and headers.get("content-type") == "text/html; charset=utf-8"
+              and b"<h1>Link not found</h1>" in page and b"list_releases" not in page,
+              "unknown release link is not a plain HTML page")
         self.public_bytes(token, "assets/style.css", CSS, password=password)
         for query in ("?", "?fbclid=x&utm_source=y", "?p=..%2F..%2Findex.html"):
             check(self.request("/" + token + "/index.html" + query, anonymous=True)[0] == 401,

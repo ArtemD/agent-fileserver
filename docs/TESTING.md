@@ -105,7 +105,9 @@ list, read, change or delete them. Shared helper: `tests/mcp_fixture.py`.
   denial behaviour, that release URLs ignore query strings, and immutable
   publish/delete.
 - `mcp_live.py` exercises every tool through Caddy with both key headers,
-  visitor passwords with and without a query string,
+  visitor passwords with and without a query string, that a visitor without
+  the password gets the Basic sign-in challenge and a plain HTML page (not
+  JSON), as does an unknown release link,
   revocation, and that no non-MCP management route is reachable. It also tests
   upload tickets: an archive and a single-file upload through Caddy with the
   returned `curl` command, ticket reuse, refusal of management keys on

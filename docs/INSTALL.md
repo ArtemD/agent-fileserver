@@ -155,7 +155,7 @@ Operator notes:
 ## Expiry
 
 New releases are deleted automatically after `FSERVER_DEFAULT_EXPIRY_DAYS` days
-(60 unless you change it). Visitors get 404 from the moment a release expires;
+(60 unless you change it). Visitors get 404 (a plain "Link not found" page) from the moment a release expires;
 a sweeper in the `api` service deletes the files at start and every 10 minutes.
 Deletion is permanent, so keep backups if you may need an expired release. Each
 deletion is one JSON line in the service log:

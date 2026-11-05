@@ -4,6 +4,8 @@ import (
 	"archive/tar"
 	"encoding/base64"
 	"encoding/json"
+	"html"
+	"net/http/httptest"
 	"os"
 	"regexp"
 	"strings"
@@ -13,7 +15,7 @@ import (
 // Every error string a handler or tool can return has a next-step hint, so an
 // agent never gets a bare "something failed".
 func TestEveryErrorHasHint(t *testing.T) {
-	call := regexp.MustCompile(`(?:apiError|apiErrorDetail)\(w, \d+, id, "([^"]+)"|mcpFailure(?:Detail)?\("([^"]+)"`)
+	call := regexp.MustCompile(`(?:apiError|apiErrorDetail|visitorError)\(w, \d+, id, "([^"]+)"|mcpFailure(?:Detail)?\("([^"]+)"`)
 	files, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatal(err)
@@ -112,5 +114,53 @@ func TestMCPErrorsCarryHints(t *testing.T) {
 	raw = mcpTool(t, f, "release_info", map[string]any{"token": strings.Repeat("A", 22)}, true)
 	if got := decodeErrorBody(t, raw); got.Error != "release not found" {
 		t.Fatalf("release_info %+v", got)
+	}
+}
+
+// Release refusals reach a person in a browser through Caddy's forward_auth:
+// they are a small readable page, never JSON, and keep the status, the Basic
+// challenge (the only way a browser asks for the password) and the request ID.
+func TestVisitorRefusalsArePagesNotJSON(t *testing.T) {
+	f := testAPI(t)
+	protected := publishAPI(t, f, `{"password":"privatePassword"}`, tarFixture{"a.txt", 0, "private", nil})
+	for _, tc := range []struct {
+		token, password string
+		status          int
+		title, hint     string
+	}{
+		{protected.Token, "", 401, "Password required", "viewer authentication required"},
+		{protected.Token, "wrong-password", 401, "Password required", "viewer authentication required"},
+		{strings.Repeat("A", 22), "", 404, "Link not found", "link not found"},
+	} {
+		r := httptest.NewRequest("GET", "/_internal/authorize", nil)
+		r.Header.Set("X-Forwarded-Uri", "/"+tc.token+"/a.txt")
+		r.Header.Set("X-Fserver-Client-IP", "192.0.2.97")
+		if tc.password != "" {
+			r.SetBasicAuth("viewer", tc.password)
+		}
+		w := httptest.NewRecorder()
+		f.a.ServeHTTP(w, r)
+		assertAPIStatus(t, w, tc.status)
+		body := w.Body.String()
+		if ct := w.Header().Get("Content-Type"); ct != "text/html; charset=utf-8" {
+			t.Fatalf("%d: content type %q", tc.status, ct)
+		}
+		if !strings.Contains(w.Header().Get("Content-Security-Policy"), "default-src 'none'") {
+			t.Fatalf("%d: no strict CSP: %v", tc.status, w.Header())
+		}
+		if json.Valid(w.Body.Bytes()) || strings.Contains(body, `"error"`) || strings.Contains(body, "<script") {
+			t.Fatalf("%d: body is not a plain page: %s", tc.status, body)
+		}
+		if !strings.Contains(body, "<h1>"+tc.title+"</h1>") || !strings.Contains(body, html.EscapeString(errorHints[tc.hint])) ||
+			!strings.Contains(body, w.Header().Get("X-Request-ID")) {
+			t.Fatalf("%d: page lacks heading, hint or request id: %s", tc.status, body)
+		}
+		if strings.Contains(body, "list_releases") || strings.Contains(body, tc.token) {
+			t.Fatalf("%d: page talks to agents or echoes the token: %s", tc.status, body)
+		}
+		challenge := w.Header().Get("WWW-Authenticate")
+		if (tc.status == 401) != strings.HasPrefix(challenge, `Basic realm="fserver-`) {
+			t.Fatalf("%d: WWW-Authenticate=%q", tc.status, challenge)
+		}
 	}
 }
