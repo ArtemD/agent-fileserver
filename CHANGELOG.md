@@ -10,6 +10,8 @@ Each release on GitHub also lists every commit and the issues it closed.
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-11-05
+
 ### Fixed
 
 - Visitors who cancel the password prompt of a protected release, open an
@@ -211,7 +213,8 @@ Each release on GitHub also lists every commit and the issues it closed.
   passwords, per-agent keys administered from the host, and hardened
   containers.
 
-[Unreleased]: https://github.com/ArtemD/agent-fileserver/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/ArtemD/agent-fileserver/compare/v0.5.2...HEAD
+[0.5.2]: https://github.com/ArtemD/agent-fileserver/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/ArtemD/agent-fileserver/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/ArtemD/agent-fileserver/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/ArtemD/agent-fileserver/compare/v0.4.1...v0.4.2
