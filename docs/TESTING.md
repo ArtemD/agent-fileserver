@@ -268,3 +268,6 @@ the issues they closed (a manual run creates the tag on the tested commit). Depl
 
 Record exactly what was tested. Never describe server tests as proof that a
 particular client can transfer a given file size.
+
+Generated release notes link to the tagged upgrade procedure, including backups
+and version-specific steps; they do not replace it with a one-command rebuild.

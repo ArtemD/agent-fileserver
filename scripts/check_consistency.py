@@ -196,6 +196,12 @@ for needed, why in (("security.yml", "govulncheck@v"), ("security.yml", "codeql-
 for path in workflows:
     if re.search(r"cancel-in-progress:\s*true", read(path)):
         fail(f"{path} must not cancel runs on main: use cancel-in-progress only for pull requests")
+release_workflow = read(".github/workflows/release.yml")
+if "docs/INSTALL.md#upgrades" not in release_workflow or "required backup" not in release_workflow:
+    fail("release notes must link to the upgrade procedure and require its backup")
+if "echo \"Upgrade: " in release_workflow:
+    fail("release notes must not replace the upgrade procedure with a rebuild command")
+
 if "workflow_call:" not in workflow:
     fail("test.yml must be reusable (workflow_call) so releases run the same checks")
 

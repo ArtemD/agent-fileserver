@@ -10,6 +10,8 @@ Each release on GitHub also lists every commit and the issues it closed.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-06
+
 ### Security
 
 - Operators: stop both containers and keep a full data backup before upgrading.
@@ -26,6 +28,9 @@ Each release on GitHub also lists every commit and the issues it closed.
   for retry. Upload completion messages use the MCP Apps content array expected
   by hosts. No client changes are required
   ([#35](https://github.com/ArtemD/agent-fileserver/issues/35)).
+- Release notes point to the full upgrade procedure and required backups
+  instead of a standalone rebuild command
+  ([#36](https://github.com/ArtemD/agent-fileserver/issues/36)).
 
 ## [0.5.2] - 2026-11-05
 
@@ -230,7 +235,8 @@ Each release on GitHub also lists every commit and the issues it closed.
   passwords, per-agent keys administered from the host, and hardened
   containers.
 
-[Unreleased]: https://github.com/ArtemD/agent-fileserver/compare/v0.5.2...HEAD
+[Unreleased]: https://github.com/ArtemD/agent-fileserver/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/ArtemD/agent-fileserver/compare/v0.5.2...v0.6.0
 [0.5.2]: https://github.com/ArtemD/agent-fileserver/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/ArtemD/agent-fileserver/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/ArtemD/agent-fileserver/compare/v0.4.2...v0.5.0

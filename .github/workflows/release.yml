@@ -91,8 +91,8 @@ jobs:
             git log --format=%B "$range" | grep -oE '^(Fixes|Closes|Resolves) #[0-9]+' \
               | sed 's/.* /- /' | sort -u || true
             echo
-            echo "Upgrade: \`git fetch --tags && git checkout $TAG && FSERVER_VERSION=$TAG docker compose up -d --build --wait\`"
-            echo "(see docs/INSTALL.md, Upgrades)."
+            echo "Upgrade to $TAG: follow [the complete upgrade procedure](https://github.com/$GITHUB_REPOSITORY/blob/$TAG/docs/INSTALL.md#upgrades)."
+            echo "Read the version-specific notes and make the required backup before changing the running installation."
           } > "$RUNNER_TEMP/notes.md"
           if [ "$EVENT" = workflow_dispatch ]; then
             set -- --target "$GITHUB_SHA"     # creates the tag on the tested commit
