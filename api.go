@@ -733,6 +733,7 @@ func (a *apiServer) view(m manifest) (releaseView, error) {
 	p, e := a.s.policy(m.Token)
 	// Every release a key sees is its own account's: the owner is not shown.
 	m.Owner = ""
+	m.Revision = ""
 	v := releaseView{manifest: m, Protected: p.Protected}
 	if p.Protected {
 		v.Username = "viewer"
@@ -793,6 +794,7 @@ func (a *apiServer) password(w http.ResponseWriter, r *http.Request, id string, 
 		apiError(w, 500, id, "could not update release policy")
 		return
 	}
+	m.Owner, m.Revision = "", ""
 	v := releaseView{manifest: m, Protected: p.Protected}
 	if p.Protected {
 		v.Username = "viewer"
@@ -1125,38 +1127,73 @@ func (a *apiServer) bodyError(w http.ResponseWriter, id string, e error) {
 	}
 }
 func (a *apiServer) download(w http.ResponseWriter, r *http.Request, id string, m manifest) {
-	root := filepath.Join(a.s.public, m.Token)
-	if m.OriginalFilename != "" {
-		if filepath.Base(m.OriginalFilename) != m.OriginalFilename || strings.HasPrefix(m.OriginalFilename, ".") {
-			apiError(w, 500, id, "invalid stored release")
-			return
-		}
-		f, e := os.OpenFile(filepath.Join(root, m.OriginalFilename), os.O_RDONLY|syscall.O_NOFOLLOW, 0)
-		if e != nil {
-			apiError(w, 404, id, "release file not found")
-			return
-		}
-		defer f.Close()
-		st, e := f.Stat()
-		if e != nil || !st.Mode().IsRegular() {
-			apiError(w, 500, id, "invalid stored release")
-			return
-		}
-		w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": m.OriginalFilename}))
-		http.ServeContent(w, r, m.OriginalFilename, st.ModTime(), f)
+	// Build the entire bounded response while mutations are excluded. Never
+	// commit HTTP/MCP success until every file and the compressor have closed.
+	data, name, modified, single, status, message := a.downloadSnapshot(r.Context(), m.Token)
+	if message != "" {
+		apiError(w, status, id, message)
 		return
 	}
-	if m.SourceBasename == "" || filepath.Base(m.SourceBasename) != m.SourceBasename || strings.HasPrefix(m.SourceBasename, ".") {
-		apiError(w, 500, id, "invalid stored release")
+	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": name}))
+	if single {
+		http.ServeContent(w, r, name, modified, bytes.NewReader(data))
 		return
 	}
 	w.Header().Set("Content-Type", "application/gzip")
-	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": m.SourceBasename + ".tar.gz"}))
-	if e := writeOriginalArchive(r.Context(), w, root, m.SourceBasename); e != nil { // Status may already be sent; never emit paths or compressor diagnostics.
-		if rw, ok := w.(*apiResponse); ok && rw.status == 0 {
-			apiError(w, 500, id, "could not download release")
+	_, _ = w.Write(data)
+}
+
+func (a *apiServer) downloadSnapshot(ctx context.Context, token string) (data []byte, name string, modified time.Time, single bool, status int, message string) {
+	unlock, e := a.s.lockContext(ctx)
+	if e != nil {
+		if errors.Is(e, context.Canceled) || errors.Is(e, context.DeadlineExceeded) {
+			return nil, "", modified, false, 408, "request cancelled or timed out"
 		}
+		return nil, "", modified, false, 500, "could not download release"
 	}
+	defer unlock()
+	m, e := a.s.activeManifest(token)
+	if e != nil {
+		return nil, "", modified, false, 404, "release not found"
+	}
+	if m.Bytes > mcpInlineBytes {
+		return nil, "", modified, false, 413, mcpTooLarge
+	}
+	root := a.s.releaseDir(m)
+	var buf bytes.Buffer
+	bounded := &archiveBudgetWriter{w: &buf, left: mcpInlineBytes}
+	if m.OriginalFilename != "" {
+		if filepath.Base(m.OriginalFilename) != m.OriginalFilename || strings.HasPrefix(m.OriginalFilename, ".") {
+			return nil, "", modified, false, 500, "invalid stored release"
+		}
+		var f *os.File
+		f, e = os.OpenFile(filepath.Join(root, m.OriginalFilename), os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+		if e != nil {
+			return nil, "", modified, false, 404, "release file not found"
+		}
+		var st os.FileInfo
+		st, e = f.Stat()
+		if e != nil || !st.Mode().IsRegular() {
+			_ = f.Close()
+			return nil, "", modified, false, 500, "invalid stored release"
+		}
+		_, e = io.Copy(bounded, &archiveBudgetReader{r: f, left: mcpInlineBytes + 1, ctx: ctx})
+		e = errors.Join(e, f.Close())
+		name, modified, single = m.OriginalFilename, st.ModTime(), true
+	} else {
+		if m.SourceBasename == "" || filepath.Base(m.SourceBasename) != m.SourceBasename || strings.HasPrefix(m.SourceBasename, ".") {
+			return nil, "", modified, false, 500, "invalid stored release"
+		}
+		e = writeOriginalArchive(ctx, bounded, root, m.SourceBasename)
+		name = m.SourceBasename + ".tar.gz"
+	}
+	if errors.Is(e, errArchiveLimit) {
+		return nil, "", modified, false, 413, mcpTooLarge
+	}
+	if e != nil {
+		return nil, "", modified, false, 500, "could not download release"
+	}
+	return buf.Bytes(), name, modified, single, 200, ""
 }
 
 // Authorize the same canonical URI that the static server will receive. Reject
@@ -1205,14 +1242,17 @@ func (a *apiServer) authorize(w http.ResponseWriter, r *http.Request, id string)
 		visitorError(w, 404, id, "link not found")
 		return
 	}
-	// Expired releases are refused from the instant they expire, whether or
-	// not the sweeper has deleted them yet.
-	if m, e := a.s.info(token); e != nil || m.expired(time.Now()) {
+	// Read policy and content version together. The lock can be released
+	// before bcrypt and the response: this content root is never overwritten.
+	unlock, e := a.s.lockContext(r.Context())
+	if e != nil {
 		visitorError(w, 404, id, "link not found")
 		return
 	}
-	p, e := a.s.policy(token)
-	if e != nil {
+	m, manifestErr := a.s.activeManifest(token)
+	p, policyErr := a.s.policy(token)
+	unlock()
+	if manifestErr != nil || policyErr != nil || m.expired(time.Now()) {
 		visitorError(w, 404, id, "link not found")
 		return
 	}
@@ -1268,6 +1308,7 @@ func (a *apiServer) authorize(w http.ResponseWriter, r *http.Request, id string)
 		// must revalidate (a cheap 304 with ETag), so an update shows at once.
 		w.Header().Set("X-Fserver-Cache-Control", "public, no-cache")
 	}
+	w.Header().Set("X-Fserver-Content-Root", m.contentRoot())
 	w.WriteHeader(204)
 }
 

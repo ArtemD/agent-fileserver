@@ -78,19 +78,31 @@ dependency is exposed to untrusted input.
 ## Updates and expiry
 
 A publish with `token` replaces the content of an existing release. The new
-content is validated, copied and frozen in staging exactly like a new release,
-then swapped in under the publisher lock with `renameat2(RENAME_EXCHANGE)`, so
-visitors see the old tree or the new one and never a mix. Where the filesystem
-lacks the flag (`EINVAL`, `ENOSYS`, `EOPNOTSUPP`) it falls back to two renames,
-with a window under a millisecond in which the release answers 404. Nothing is
-served that was not frozen first. The target token is checked before any bytes
-are processed and again before extraction.
+content is validated, copied and frozen in staging, then installed under
+`public/TOKEN/.revisions/REVISION/TOKEN/`. The random revision name is never
+reused. A private manifest selects the active revision; an empty revision means
+the original flat `public/TOKEN/` layout. Existing releases need no migration.
+The target token and account are checked again under the publisher lock.
 
-Access fails safe across the swap. A new visitor password is written before the
-swap, so a crash can leave old content protected but never new content public.
+Authorization reads the manifest and access policy together under that lock.
+Its successful response selects the exact content root Caddy must use; Caddy
+strips caller-supplied selection headers and refuses a missing selection.
+After an update, a delayed authorized request can finish reading old bytes or
+receive 404, but cannot read replacement bytes using the old permission check.
+The same selected root is used for static files, compression sidecars and SPA
+fallback. Revision paths are hidden from public URLs and MCP results.
+
+A new visitor password is persisted before the manifest selects new content,
+so a crash can leave old content protected but never new content public.
 An update without a password keeps the current policy; only `remove_password`
-makes a release public. The manifest is written before the swap and restored if
-the swap fails.
+makes a release public. Failed activation leaves the previous manifest and
+content usable. After activation the old content is removed; interrupted
+cleanup may leave unreachable old bytes until deletion of the release.
+
+Inline MCP downloads are completely built under the publisher lock within the
+existing 1 MiB output limit. The lock is released before the response is sent.
+A concurrent update or deletion cannot produce a successful partial archive;
+read or compression failures return an error before any file bytes are sent.
 
 Release URLs are derived, never trusted from disk. Every read of a manifest
 replaces its stored `url` with one built from the current `FSERVER_BASE_URL`,
@@ -108,9 +120,6 @@ re-checks the expiry before it deletes, so a `set_expiry` or update that raced
 it wins. Each deletion writes one `expire` audit line (token and status, no
 agent, no content). Manifests without `expires_at` never expire, so an upgrade
 deletes nothing. Automatic deletion is as permanent as `delete_release`.
-
-`golang.org/x/sys` is now a direct dependency (it was already in the module
-graph) for `renameat2`. It is not exposed to untrusted input.
 
 Refusals tell the caller what to fix without leaking server state. An `entry`
 echoed back is the caller's own archive member name, cut to 256 bytes and

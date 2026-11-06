@@ -18,8 +18,6 @@ import (
 	"strings"
 	"syscall"
 	"time"
-
-	"golang.org/x/sys/unix"
 )
 
 // Manifests count original files and bytes, not generated compression sidecars
@@ -43,6 +41,9 @@ type manifest struct {
 	// account (and every release from before accounts existed). Only keys of
 	// that account can see or manage it. Never part of a release view.
 	Owner string `json:"owner,omitempty"`
+	// Revision selects immutable replacement content. Empty is the legacy tree.
+	// This private storage field is never included in a release view.
+	Revision string `json:"revision,omitempty"`
 }
 
 // account is the account that owns the release.
@@ -406,7 +407,7 @@ func (s *store) publishWithPolicyContext(ctx context.Context, source, label stri
 }
 
 // releaseOptions describe one publish. With Replace set, the content of that
-// existing release is swapped in place: its token and root URL stay the same,
+// existing release is replaced: its token and root URL stay the same,
 // a nil Policy keeps its access policy, an empty Label keeps its label and
 // KeepExpiry keeps its expires_at.
 type releaseOptions struct {
@@ -421,7 +422,7 @@ type releaseOptions struct {
 }
 
 // stagedRelease is a validated, frozen private copy of a source, ready for the
-// single activation (or exchange) rename.
+// activation rename into a new release or immutable content revision.
 type stagedRelease struct {
 	dir, name        string
 	single, hasIndex bool
@@ -511,8 +512,8 @@ func (s *store) publishRelease(ctx context.Context, source string, o releaseOpti
 	if err != nil {
 		return m, "", err
 	}
-	// After activation the stage path is gone; after an exchange it holds the
-	// previous content. Either way it is private and removed here.
+	// After activation the stage path is gone. A failed activation leaves
+	// only private staging to remove here.
 	defer removeStage(r.dir)
 	unlock, err := s.lockContext(ctx)
 	if err != nil {
@@ -584,11 +585,23 @@ func (s *store) activateLocked(ctx context.Context, r *stagedRelease, o releaseO
 	return m, nil
 }
 
-// replaceLocked swaps new content into an existing release. A new password is
-// written before the swap, so a crash can leave the old content protected but
-// never the new content public. The manifest is written before the swap and
-// restored if the swap fails.
-func (s *store) replaceLocked(ctx context.Context, r *stagedRelease, o releaseOptions) (manifest, error) {
+// contentRoot is relative to public and retains /TOKEN/ in the request path.
+// A previously authorized root is never reused for replacement bytes.
+func (m manifest) contentRoot() string {
+	if m.Revision == "" {
+		return "."
+	}
+	return m.Token + "/.revisions/" + m.Revision
+}
+
+func (s *store) releaseDir(m manifest) string {
+	return filepath.Join(s.public, m.contentRoot(), m.Token)
+}
+
+// replaceLocked installs a fresh immutable revision, then selects it with the
+// manifest. Authorization reads policy and manifest together under this lock.
+// Persist the policy first so a crash cannot expose private replacement bytes.
+func (s *store) replaceLocked(ctx context.Context, r *stagedRelease, o releaseOptions) (result manifest, err error) {
 	old, err := s.activeManifest(o.Replace)
 	if err != nil {
 		return manifest{}, err
@@ -613,7 +626,41 @@ func (s *store) replaceLocked(ctx context.Context, r *stagedRelease, o releaseOp
 	}
 	now := time.Now().UTC()
 	m.UpdatedAt = &now
+	m.Revision, err = newToken()
+	if err != nil {
+		return old, err
+	}
 	if err = ctx.Err(); err != nil {
+		return old, err
+	}
+	container := filepath.Join(s.public, m.Token)
+	if err = os.Chmod(container, 0755); err != nil {
+		return old, err
+	}
+	defer func() { err = errors.Join(err, os.Chmod(container, 0555)) }()
+	revisions := filepath.Join(container, ".revisions")
+	if err = mkdirPrivateTree(revisions, 0755); err != nil {
+		return old, err
+	}
+	defer func() { err = errors.Join(err, os.Chmod(revisions, 0555)) }()
+	revision := filepath.Join(revisions, m.Revision)
+	// Mkdir, not MkdirAll: a revision name must never be reused.
+	if err = os.Mkdir(revision, 0755); err != nil {
+		return old, err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			removeStage(revision)
+		}
+	}()
+	if err = os.Rename(r.dir, s.releaseDir(m)); err != nil {
+		return old, err
+	}
+	if err = os.Chmod(s.releaseDir(m), 0555); err != nil {
+		return old, err
+	}
+	if err = os.Chmod(revision, 0555); err != nil {
 		return old, err
 	}
 	if o.Policy != nil {
@@ -624,47 +671,19 @@ func (s *store) replaceLocked(ctx context.Context, r *stagedRelease, o releaseOp
 	if err = s.writeManifest(m); err != nil {
 		return old, err
 	}
-	if err = s.swapRelease(old.Token, r.dir); err != nil {
-		return old, errors.Join(fmt.Errorf("swap release content: %w", err), s.writeManifest(old))
+	committed = true
+	// A delayed reader can finish old bytes or get 404, never new bytes under
+	// an old authorization. Cleanup failure leaves only unreachable old data.
+	if old.Revision != "" {
+		removeStage(filepath.Join(revisions, old.Revision))
+	} else if entries, e := os.ReadDir(container); e == nil {
+		for _, entry := range entries {
+			if entry.Name() != ".revisions" {
+				removeStage(filepath.Join(container, entry.Name()))
+			}
+		}
 	}
 	return m, nil
-}
-
-// renameExchange atomically exchanges two paths (Linux renameat2). Tests
-// replace it to exercise the fallback for filesystems without the flag.
-var renameExchange = func(a, b string) error {
-	return unix.Renameat2(unix.AT_FDCWD, a, unix.AT_FDCWD, b, unix.RENAME_EXCHANGE)
-}
-
-// swapRelease puts the frozen stage at public/token and the previous content
-// at the stage path. Visitors see either the old or the new tree, never a
-// mix within one file. Without RENAME_EXCHANGE it falls back to two renames,
-// a sub-millisecond window in which the release returns 404.
-func (s *store) swapRelease(token, stage string) error {
-	live := filepath.Join(s.public, token)
-	// Linux needs write permission on a directory that moves to a new parent.
-	if err := os.Chmod(live, 0755); err != nil {
-		return err
-	}
-	err := renameExchange(stage, live)
-	if errors.Is(err, unix.EINVAL) || errors.Is(err, unix.ENOSYS) || errors.Is(err, unix.EOPNOTSUPP) {
-		err = swapByRename(live, stage)
-	}
-	if err != nil {
-		return errors.Join(err, os.Chmod(live, 0555))
-	}
-	return os.Chmod(live, 0555)
-}
-
-func swapByRename(live, stage string) error {
-	previous := stage + ".previous"
-	if err := os.Rename(live, previous); err != nil {
-		return err
-	}
-	if err := os.Rename(stage, live); err != nil {
-		return errors.Join(err, os.Rename(previous, live))
-	}
-	return os.Rename(previous, stage)
 }
 
 // setExpiry changes when a release is deleted; nil means never.
@@ -905,6 +924,17 @@ func (s *store) activeManifest(token string) (manifest, error) {
 	}
 	if m.Token != token {
 		return m, fmt.Errorf("manifest token mismatch for %s", token)
+	}
+	if m.Revision != "" {
+		if !validToken(m.Revision) {
+			return m, fmt.Errorf("invalid content revision")
+		}
+		if err = noSymlinkAncestors(s.releaseDir(m), false); err != nil {
+			return m, err
+		}
+		if st, err = os.Lstat(s.releaseDir(m)); err != nil || !st.IsDir() {
+			return m, fmt.Errorf("content revision is not a real directory")
+		}
 	}
 	m.URL = s.releaseURL(m)
 	return m, nil

@@ -66,6 +66,7 @@ themselves. Details: docs/TESTING.md.
 | `errors.go` | Error responses: stable error strings plus a next-step `hint` for every one |
 | `ui.go` | MCP Apps: embeds `ui/`, links tools to panels with `_meta.ui`, registers the `ui://agent-fileserver/*` resources |
 | `ui/` | Panel sources: `release.html`, `releases.html`, `upload.html`, shared `bridge.js` (MCP Apps client) and `base.css`; inlined at start |
+| `authorization_revision_test.go`, `download_snapshot_test.go` | Real-Caddy authorization race and bounded download snapshot regressions; set `FSERVER_TEST_CADDY_BIN` as in docs/TESTING.md |
 | `ui_test.go` | Go tests for the panel resources, tool metadata, composition, `upload_from_computer` and `/_upload` CORS |
 | `tests/` | Live tests against a running stack |
 | `tests/ui_host.mjs`, `tests/ui_*.test.mjs` | Mock MCP Apps host and the browser tests of the three panels (Playwright, Chromium) |

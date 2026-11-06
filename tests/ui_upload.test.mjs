@@ -187,7 +187,7 @@ const tests = {
     const ctx = await t.panel.waitFor("ui/update-model-context");
     assert.match(ctx[0].params.content[0].text, new RegExp("^Uploaded site\\.zip as release " + TOKEN22 + ": " + BASE + "/" + TOKEN22 + "/ \\(expires "));
     const msg = await t.panel.waitFor("ui/message");
-    assert.equal(msg[0].params.content.text, "Uploaded site.zip: " + BASE + "/" + TOKEN22 + "/");
+    assert.equal(msg[0].params.content[0].text, "Uploaded site.zip: " + BASE + "/" + TOKEN22 + "/");
     assert.ok(!out.includes("upl_TICKET"), "ticket is not displayed");
     assert.ok(!out.includes(PASSWORD), "password is not displayed");
     assert.ok(!JSON.stringify(ctx).includes("upl_TICKET") && !JSON.stringify(msg).includes(PASSWORD));
@@ -339,19 +339,39 @@ const tests = {
     await finish(t);
   },
 
-  "Cancel during upload aborts and offers Publish again": async () => {
-    const t = await setup({
-      put: () => ({ hang: true }),
-    });
+  "Cancel after sending reports uncertainty and retries identical settings": async () => {
+    const t = await setup({ put: (n) => n === 1 ? { hang: true } : { status: 201, json: releaseView() } });
     const f = t.panel.frame;
     await pick(t, makeFile("site.zip", zipBytes));
     await publishBtn(f).click();
-    await f.getByRole("button", { name: "Cancel" }).waitFor();
+    // Wait until the endpoint receives the request, not merely the Cancel button.
+    for (let i = 0; !t.puts.length && i < 100; i++) await t.panel.page.waitForTimeout(20);
+    assert.equal(t.puts.length, 1, "endpoint received the upload");
     await f.getByRole("button", { name: "Cancel" }).click();
-    await f.getByText("Upload cancelled").waitFor();
-    await publishBtn(f).waitFor();
-    assert.equal(await f.locator("#result").count(), 0);
-    await t.panel.close();
+    await f.getByText("Upload stopped. Publication may have completed.").waitFor();
+    assert.doesNotMatch(await text(f), /Nothing was published/);
+    assert.equal(await f.locator("#one").count(), 0, "retry cannot change the file interpretation");
+    await t.panel.toolInput({ label: "changed after cancellation" });
+    await f.getByRole("button", { name: "Try again" }).click();
+    await f.waitForSelector("#result");
+    assert.deepEqual(t.begins[1].args, t.begins[0].args, "retry keeps the whole request");
+    await finish(t);
+  },
+
+  "Cancel while hashing sends nothing and allows a new attempt": async () => {
+    for (const phone of PHONES) {
+      const t = await setup({ phone });
+      const f = t.panel.frame;
+      await pick(t, makeFile("site.zip", zipBytes));
+      await f.evaluate(() => { window.fsSha256Hex = () => new Promise(() => {}); });
+      await publishBtn(f).click();
+      await f.getByRole("button", { name: "Cancel" }).click();
+      await f.getByText("Upload cancelled before sending. Nothing was uploaded.").waitFor();
+      assert.equal(t.begins.length, 0);
+      assert.equal(t.puts.length, 0);
+      await expectPhoneFit(t.panel, "cancelled before sending");
+      await finish(t);
+    }
   },
 
   "fits a phone and can be used by touch in every state": async () => {
@@ -375,9 +395,10 @@ const tests = {
       await f.getByRole("button", { name: "Cancel" }).waitFor();
       await expectPhoneFit(t.panel, "uploading");
       await f.getByRole("button", { name: "Cancel" }).tap();
-      await publishBtn(f).waitFor();
+      await f.getByRole("button", { name: "Try again" }).waitFor();
+      await expectPhoneFit(t.panel, "cancelled with unknown outcome");
       put = { status: 413, json: { error: "file too large", hint: "The limit is 50 MB. Split the site or ask the owner to raise the limit." } };
-      await publishBtn(f).tap();
+      await f.getByRole("button", { name: "Try again" }).tap();
       await f.getByText("file too large").first().waitFor();
       await expectPhoneFit(t.panel, "failed");
       put = { status: 201, json: releaseView({ label: long, url: BASE + "/" + TOKEN22 + "/" + long }) };

@@ -134,10 +134,10 @@ another domain, every release, old or new, reports links on the new domain at
 once. Do not store a `url` as the release's identity: keep the `token` and ask
 `release_info` for the current link.
 
-The swap is atomic where the filesystem allows it: visitors see the old tree or
-the new tree, never a mix. On a filesystem without that support the release
-returns 404 for under a millisecond during the swap. A new password is stored
-before the swap, so the new content is never briefly public.
+Each authorization selects one immutable content version. Requests authorized
+before an update can finish reading the old version or return 404 if it has
+already been removed. They cannot read replacement content under the old
+permission check. Release links stay the same.
 
 Because they can replace content, these three tools are annotated as
 destructive (`destructiveHint`), so a client may ask before it runs them.
@@ -252,6 +252,9 @@ is received at a time, and publishing then waits for any MCP publish in progress
 The body may take up to 60 minutes to send, and publishing up to 15 minutes more.
 If the connection drops after the body was fully received, publishing still
 completes; check `list_releases` or retry with the same idempotency key.
+The upload panel distinguishes cancellation before sending from an unknown
+publication outcome after sending. **Try again** keeps the same file, key and
+settings, even if the host later sends different tool inputs.
 
 | Status | When |
 |---|---|
@@ -461,6 +464,10 @@ Panels for `list_releases` and the release tools are described under
 `set_expiry` returns the release view with the new `expires_at` and a `notice`.
 It replaces the previous expiry, so it can also shorten one. It does not change
 the content. See [Expiry](#expiry).
+
+Inline downloads are prepared completely before success is returned. Concurrent
+updates and deletions cannot turn a successful download into a partial archive;
+a read failure returns an error with a retry hint. The 1 MiB limit is unchanged.
 
 ### list_releases result
 

@@ -34,6 +34,7 @@ and a 256 MiB single-file upload/download round trip.
 
 import base64
 from datetime import datetime, timedelta, timezone
+import gzip
 import hashlib
 import io
 import json
@@ -202,7 +203,9 @@ class MCPLive(unittest.TestCase):
         hfile = stem.with_suffix(".headers")
         response_headers = stem.with_suffix(".response-headers")
         response_body = stem.with_suffix(".response")
-        lines = ["User-Agent: agent-fileserver-mcp-live", "Accept-Encoding: identity"]
+        lines = ["User-Agent: agent-fileserver-mcp-live"]
+        if not any(name.lower() == "accept-encoding" for name in (headers or {})):
+            lines.append("Accept-Encoding: identity")
         if password is not None:
             basic = base64.b64encode(("viewer:" + password).encode()).decode()
             lines.append("Authorization: Basic " + basic)
@@ -461,6 +464,20 @@ class MCPLive(unittest.TestCase):
         except (ValueError, KeyError, TypeError):
             raise LiveFailure("inline download base64 invalid") from None
         check(sha256(decoded) == sha256(PNG), "inline download hash mismatch")
+
+        site = self.publish()
+        for revised in (False, True):
+            if revised:
+                site = self.publish(args={"token": site["token"],
+                                          "idempotency_key": secrets.token_urlsafe(24),
+                                          "files": [{"path": "index.html", "text": HTML.decode()},
+                                                    {"path": "assets/style.css", "text": CSS.decode()}]})
+            result = self.tool("download_release", {"token": site["token"]})
+            packed = base64.b64decode(result["content_base64"], validate=True)
+            with tarfile.open(fileobj=io.BytesIO(packed), mode="r:gz") as archive:
+                contents = sorted(archive.extractfile(member).read()
+                                  for member in archive.getmembers() if member.isfile())
+            check(contents == sorted([HTML, CSS]), "site download is incomplete or differs after update")
 
     def test_08_password_set_reset_remove(self):
         view = self.publish()
@@ -928,6 +945,17 @@ class MCPLive(unittest.TestCase):
         info = self.tool("release_info", {"token": token})
         self.parse_time(info.get("updated_at"), "release_info")
         check(info.get("created_at") == first.get("created_at"), "release_info created_at changed")
+        check("revision" not in info and "revision" not in updated,
+              "private content revision leaked through MCP")
+        download = self.tool("download_release", {"token": token})
+        check(base64.b64decode(download["content_base64"], validate=True) == page,
+              "updated single-file download differs from published bytes")
+        status, headers, body = self.request("/" + token + "/index.html", anonymous=True,
+                                            headers={"X-Fserver-Content-Root": "."})
+        check(status == 200 and body == page, "caller header overrode the active content revision")
+        check("x-fserver-content-root" not in headers, "private content selection leaked to visitors")
+        check(self.request("/" + token + "/.revisions/", anonymous=True)[0] == 404,
+              "private revision directory is reachable")
         # Exact retry returns the same release; the same key for another release is refused.
         replay = self.tool("publish_files", args)
         check(replay.get("token") == token and replay.get("updated_at") == updated.get("updated_at"),
@@ -944,6 +972,28 @@ class MCPLive(unittest.TestCase):
         args = {"token": token, "idempotency_key": secrets.token_urlsafe(24),
                 "files": [{"path": "index.html", "text": page.decode()}]}
         check(self.publish(args=args).get("expires_at") is None, "update without days changed the expiry")
+
+        # A revised tree must retain SPA, compression, ranges and original-only downloads.
+        script = b"console.log('updated');\n" * 200
+        self.publish(args={"token": token, "idempotency_key": secrets.token_urlsafe(24), "spa": True,
+                           "files": [{"path": "index.html", "text": page.decode()},
+                                     {"path": "app.js", "text": script.decode()}]})
+        self.public_bytes(token, "client/route", page)
+        check(self.request("/" + token + "/missing.js", anonymous=True)[0] == 404,
+              "revised SPA fell back for a missing asset")
+        status, headers, packed = self.request("/" + token + "/app.js", anonymous=True,
+                                               headers={"Accept-Encoding": "gzip"})
+        check(status == 200 and headers.get("content-encoding") == "gzip"
+              and gzip.decompress(packed) == script, "revised content lost precompression")
+        status, _, partial = self.request("/" + token + "/app.js", anonymous=True,
+                                          headers={"Range": "bytes=0-7"})
+        check(status == 206 and partial == script[:8], "revised content lost range support")
+        result = self.tool("download_release", {"token": token})
+        packed = base64.b64decode(result["content_base64"], validate=True)
+        with tarfile.open(fileobj=io.BytesIO(packed), mode="r:gz") as archive:
+            contents = sorted(archive.extractfile(member).read()
+                              for member in archive.getmembers() if member.isfile())
+        check(contents == sorted([page, script]), "revised download contains old or generated files")
 
     def test_28_update_keeps_the_access_policy(self):
         password = secrets.token_urlsafe(24)

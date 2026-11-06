@@ -15,6 +15,8 @@ own server over **remote MCP**, and get back a fresh, unguessable URL to share.
 - Fresh unlisted URL per release; optional visitor password. Publish again with the release's `token` to update a page and keep its link.
 - Links **expire after 60 days** by default (operator setting); an agent can keep one longer with `set_expiry`.
 - List, inspect, download (≤ 1 MiB), delete, and set/reset/remove passwords.
+  Downloads finish building before reporting success. Cancelling an upload
+  after sending may leave a published release; the panel offers a safe retry.
 - **Panels in Claude:** a release card, a releases dashboard and an upload panel where you drop a file from your own computer ([details](#panels-in-the-chat)).
 - Docker Compose: Caddy serves bytes; a sandboxed Go service (no network) handles MCP on a private Unix socket.
 - No database, analytics, uploaded code execution or directory listing.
@@ -293,7 +295,10 @@ FSERVER_VERSION=$(git describe --tags --always --dirty) docker compose up -d --b
 ```
 
 Upgrades keep keys, passwords and releases (they live in `./data`). Existing
-releases keep no expiry; nothing is deleted on upgrade. Changing
+releases keep their recorded expiry; nothing is deleted by migration. Updates
+now use immutable content versions. Stop both containers before upgrading and
+keep a full backup for rollback, as described in the
+[upgrade notes](docs/INSTALL.md#upgrades). Changing
 `FSERVER_DOMAIN` moves every release link to the new domain at once (see
 [docs/INSTALL.md](docs/INSTALL.md#upgrades)).
 

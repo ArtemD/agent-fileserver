@@ -93,16 +93,22 @@ route {
 		# headers/SPA rewrites before authorization.
 		route {
 			request_header -X-Fserver-Cache-Control
+			request_header -X-Fserver-Content-Root
 			# Every release has a private policy; missing policy fails closed.
 			# This internal endpoint is NEVER proxied as a public route.
 			forward_auth unix//run/agent-fileserver-api/http.sock {
 				uri /_internal/authorize
 				header_up X-Fserver-Client-IP {client_ip}
-				copy_headers X-Fserver-Cache-Control
+				copy_headers X-Fserver-Cache-Control X-Fserver-Content-Root
 				transport http {
 					response_header_timeout 10s
 				}
 			}
+			# Only the trusted authorization response chooses the immutable tree.
+			# Fail closed if a mismatched older service omits the selection.
+			@missingroot header !X-Fserver-Content-Root
+			respond @missingroot "Not Found" 404
+			root * /srv/public/{http.request.header.X-Fserver-Content-Root}
 			# Default private. Only a precise, trusted public-policy answer
 			# permits shared caching; caller-supplied helper headers are gone.
 			header Cache-Control "private, no-store"
@@ -118,7 +124,10 @@ route {
 			rewrite @spa /{re.release.1}/index.html
 			file_server {
 				index index.html
-				hide .*
+				# Scope filesystem hiding below the selected root: .revisions
+				# is a trusted ancestor. @hidden and authorize reject hidden
+				# URL components at every depth before any rewrite.
+				hide {http.vars.root}/{re.release.1}/.*
 				precompressed br gzip
 			}
 		}

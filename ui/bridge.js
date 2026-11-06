@@ -123,7 +123,7 @@
     // message posts a user-visible chat message; context updates what the
     // model knows without a message. Both are best effort.
     message: function (text) {
-      return request("ui/message", { role: "user", content: { type: "text", text: String(text) } }).catch(function () {});
+      return request("ui/message", { role: "user", content: [{ type: "text", text: String(text) }] }).catch(function () {});
     },
     updateContext: function (text) {
       return request("ui/update-model-context", { content: [{ type: "text", text: String(text) }] }).catch(function () {});

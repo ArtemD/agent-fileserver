@@ -10,6 +10,23 @@ Each release on GitHub also lists every commit and the issues it closed.
 
 ## [Unreleased]
 
+### Security
+
+- Operators: stop both containers and keep a full data backup before upgrading.
+  Release updates use immutable content versions selected during authorization;
+  existing URLs remain unchanged. Follow the
+  [upgrade and rollback steps](docs/INSTALL.md#upgrades)
+  ([GHSA-2qfg-m2gw-79hp](https://github.com/ArtemD/agent-fileserver/security/advisories/GHSA-2qfg-m2gw-79hp)).
+
+### Fixed
+
+- Downloads finish building before returning success, so concurrent updates or
+  deletions cannot produce an incomplete successful archive. Upload cancellation
+  accurately describes uncertain publication and preserves the complete request
+  for retry. Upload completion messages use the MCP Apps content array expected
+  by hosts. No client changes are required
+  ([#35](https://github.com/ArtemD/agent-fileserver/issues/35)).
+
 ## [0.5.2] - 2026-11-05
 
 ### Fixed

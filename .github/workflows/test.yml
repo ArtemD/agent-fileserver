@@ -66,8 +66,14 @@ jobs:
       - name: Consistency and public-repo hygiene (docs, tests, CI, secrets)
         run: python3 scripts/check_consistency.py
       - name: Native prerequisites
-        run: sudo apt-get update && sudo apt-get install -y brotli
+        run: |
+          sudo apt-get update && sudo apt-get install -y brotli
+          cid=$(docker create caddy:2.11.7-alpine)
+          docker cp "$cid:/usr/bin/caddy" "$RUNNER_TEMP/fserver-test-caddy"
+          docker rm "$cid"
       - name: Go race tests, vet, format and module verification
+        env:
+          FSERVER_TEST_CADDY_BIN: ${{ runner.temp }}/fserver-test-caddy
         run: |
           go test -race .
           go vet .

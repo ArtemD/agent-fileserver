@@ -304,7 +304,7 @@
   function reset() {
     s.run++;
     if (s.xhr) { try { s.xhr.abort(); } catch (e) { /* already done */ } s.xhr = null; }
-    s.file = null; s.one = false; s.key = null; s.sha = null; s.result = null; s.err = null;
+    s.file = null; s.one = false; s.key = null; s.sha = null; s.result = null; s.err = null; s.attempt = null;
     s.notice = ""; s.pickError = ""; s.pct = 0; s.loaded = 0; s.announced = false;
     setPhase("pick");
   }
@@ -320,16 +320,20 @@
       s.pickError = "Too large: " + fs.fmtBytes(f.size) + ", limit " + fs.fmtBytes(s.max);
       return render();
     }
-    s.pickError = ""; s.notice = ""; s.err = null; s.sha = null; s.one = false;
+    s.pickError = ""; s.notice = ""; s.err = null; s.sha = null; s.one = false; s.attempt = null;
     s.file = f;
     s.key = randomKey();
     setPhase("ready");
   }
 
   function cancel() {
+    var sent = s.phase === "uploading";
     s.run++;
     if (s.xhr) { try { s.xhr.abort(); } catch (e) { /* already done */ } s.xhr = null; }
-    s.notice = "Upload cancelled. Nothing was published.";
+    if (sent) {
+      return fail("Upload stopped. Publication may have completed.", "Try again to finish or retrieve the result using the same upload key and settings. It cannot publish twice. You can also ask the agent to list your releases before starting another upload.");
+    }
+    s.notice = "Upload cancelled before sending. Nothing was uploaded.";
     setPhase("ready");
   }
 
@@ -360,7 +364,10 @@
     }).then(function () {
       if (run !== s.run) { return null; }
       setPhase("starting");
-      return fs.call("begin_upload", beginArgs()).catch(function () {
+      // Freeze the request when first sent. A retry after an uncertain result
+      // must keep both the key and all settings, even if host input changes.
+      if (!s.attempt) { s.attempt = beginArgs(); }
+      return fs.call("begin_upload", s.attempt).catch(function () {
         var he = new Error("host");
         he.__from = "host";
         throw he;
@@ -438,6 +445,7 @@
   window.addEventListener("drop", function (e) { e.preventDefault(); });
 
   fs.onToolInput(function (args) {
+    if (s.attempt) { return; }
     s.opts = args && typeof args === "object" ? args : {};
     if (s.phase !== "wait") { render(); }
   });

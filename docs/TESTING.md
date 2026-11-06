@@ -60,8 +60,8 @@ no `Access-Control-Allow-Credentials`, management keys still refused, and
 `lifecycle_test.go` covers the release lifecycle: expiry (default and
 `expires_in_days`, `set_expiry`, 404 from the instant of expiry before the
 sweeper, the sweeper's re-check under the lock, legacy manifests that never expire), update in place (token and URL kept,
-content replaced, policy, label and expiry kept or replaced, the exchange swap
-and its two-rename fallback, a missing or malformed token, idempotency with
+content replaced, policy, label and expiry kept or replaced, immutable content
+revisions and failed revision activation, a missing or malformed token, idempotency with
 `token`), the `disk` report in `server_info` and the `list_releases` totals.
 It also publishes a single file and a website under one base URL, restarts on
 another and checks that `list_releases`, `release_info`, `set_expiry`, the
@@ -70,6 +70,26 @@ password tools, the internal release core and an update all report the new one
 manifests whose stored `url` is stale or missing. `tests/mcp_live.py` checks on
 the running stack that every listed release reports the origin of a fresh
 publish.
+
+`authorization_revision_test.go` exercises the actual Caddy routes with an
+authorization response deliberately delayed across a password-protected update,
+for both legacy and previously revised releases. It also checks that forged
+selection headers cannot override the authorized root. CI runs it on both Go
+versions using the deployment's pinned Caddy binary. To include it locally:
+
+```sh
+cid=$(docker create caddy:2.11.7-alpine)
+docker cp "$cid:/usr/bin/caddy" /tmp/fserver-test-caddy
+docker rm "$cid"
+FSERVER_TEST_CADDY_BIN=/tmp/fserver-test-caddy go test -race .
+```
+
+Run that command on Linux; the image contains a Linux executable. Without the
+variable only this external-binary test skips. `download_snapshot_test.go`
+checks deletion and replacement at the first response byte, cancelled downloads
+and rechecking the current size limit. Browser tests cover cancellation before
+sending, uncertain publication after sending, exact retries, and schema-valid
+chat messages at desktop and phone widths.
 
 The optional large test allocates hundreds of MiB on the test machine:
 

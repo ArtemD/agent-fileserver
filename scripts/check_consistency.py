@@ -157,6 +157,12 @@ if len(re.findall(r"^\s*reverse_proxy\s", caddy, re.M)) != 2 \
     fail("Caddy must reverse_proxy exactly twice (/mcp and /_upload), both to the API socket")
 if "forward_auth unix//run/agent-fileserver-api/http.sock" not in caddy:
     fail("Caddy release authorization must use forward_auth to the API socket")
+for invariant in ("request_header -X-Fserver-Content-Root",
+                  "copy_headers X-Fserver-Cache-Control X-Fserver-Content-Root",
+                  "@missingroot header !X-Fserver-Content-Root",
+                  "root * /srv/public/{http.request.header.X-Fserver-Content-Root}"):
+    if invariant not in caddy:
+        fail("Caddy must bind static serving to the authorized content revision: " + invariant)
 upload_block = re.search(r"handle @upload \{(.*?)\n\t\}", caddy, re.S)
 if not upload_block or not re.search(r"request_body\s*\{\s*max_size\s+\S+", upload_block.group(1)):
     fail("the /_upload handle must cap the request body with request_body max_size")
@@ -165,7 +171,7 @@ if "request>headers>X-Auth-Token replace REDACTED" not in caddy:
 
 # 4. CI runs every automated check, with actions pinned to full commit SHAs.
 workflow = read(".github/workflows/test.yml")
-for command in ("go test -race .", "go vet .", "gofmt -l", "go mod verify",
+for command in ("go test -race .", "FSERVER_TEST_CADDY_BIN:", "go vet .", "gofmt -l", "go mod verify",
                 "python3 scripts/check_consistency.py", "py_compile", "sh -n scripts/exe-dev-up.sh",
                 "docker compose config -q", "compose.direct.yaml config -q", "caddy validate",
                 "docker compose up -d --build --wait",

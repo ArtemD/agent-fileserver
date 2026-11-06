@@ -15,8 +15,6 @@ import (
 	"syscall"
 	"testing"
 	"time"
-
-	"golang.org/x/sys/unix"
 )
 
 // lifecycleAPI is testAPI with an adjustable configuration.
@@ -350,7 +348,7 @@ func TestLifecycleUpdateInPlace(t *testing.T) {
 	if !strings.Contains(up.Notice, "set_expiry") {
 		t.Fatalf("update result has no notice: %q", up.Notice)
 	}
-	b, err := os.ReadFile(filepath.Join(f.a.s.public, first.Token, "hello.txt"))
+	b, err := os.ReadFile(filepath.Join(currentContentDir(t, f.a.s, first.Token), "hello.txt"))
 	if err != nil || string(b) != "new bytes" {
 		t.Fatalf("bytes on disk: %q %v", b, err)
 	}
@@ -382,7 +380,7 @@ func TestLifecycleUpdateInPlace(t *testing.T) {
 	if ms, err := f.a.s.list(); err != nil || len(ms) != 1 {
 		t.Fatalf("updates must not create releases: %d %v", len(ms), err)
 	}
-	// Staging is clean after swaps (the previous content is removed).
+	// Staging is clean after updates (the previous content is removed).
 	left, _ := filepath.Glob(filepath.Join(f.a.s.staging, "release-*"))
 	if len(left) != 0 {
 		t.Fatalf("staging left behind: %v", left)
@@ -451,56 +449,40 @@ func TestLifecycleUpdateIdempotency(t *testing.T) {
 	}
 }
 
-func TestLifecycleUpdateSwapFallback(t *testing.T) {
-	for _, errno := range []error{unix.EINVAL, unix.ENOSYS, unix.EOPNOTSUPP} {
-		t.Run(errno.Error(), func(t *testing.T) {
-			f := testAPI(t)
-			orig := renameExchange
-			calls := 0
-			renameExchange = func(a, b string) error { calls++; return errno }
-			t.Cleanup(func() { renameExchange = orig })
-
-			v, _ := mcpView(t, f, "publish_files", fileArgs("a.txt", "old", nil))
-			up, _ := mcpView(t, f, "publish_files", fileArgs("a.txt", "new", map[string]any{"token": v.Token}))
-			if calls != 1 || up.Token != v.Token {
-				t.Fatalf("exchange calls=%d result=%+v", calls, up)
-			}
-			b, err := os.ReadFile(filepath.Join(f.a.s.public, v.Token, "a.txt"))
-			if err != nil || string(b) != "new" {
-				t.Fatalf("fallback content: %q %v", b, err)
-			}
-			if st, err := os.Stat(filepath.Join(f.a.s.public, v.Token)); err != nil || st.Mode().Perm() != 0555 {
-				t.Fatalf("not frozen: %v %v", st, err)
-			}
-			left, _ := filepath.Glob(filepath.Join(f.a.s.staging, "release-*"))
-			if len(left) != 0 {
-				t.Fatalf("staging left behind: %v", left)
-			}
-		})
+func currentContentDir(t *testing.T, s *store, token string) string {
+	t.Helper()
+	m, err := s.info(token)
+	if err != nil {
+		t.Fatal(err)
 	}
+	return s.releaseDir(m)
 }
 
-func TestLifecycleUpdateSwapFailureKeepsOldContent(t *testing.T) {
+func TestLifecycleUpdateRevisionFailureKeepsOldContent(t *testing.T) {
 	f := testAPI(t)
-	orig := renameExchange
-	renameExchange = func(a, b string) error { return unix.EPERM }
-	t.Cleanup(func() { renameExchange = orig })
-
 	v, _ := mcpView(t, f, "publish_files", fileArgs("a.txt", "old", map[string]any{"label": "first"}))
+	container := filepath.Join(f.a.s.public, v.Token)
+	if err := os.Chmod(container, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// A corrupt revision parent must fail closed without touching live bytes.
+	if err := os.WriteFile(filepath.Join(container, ".revisions"), nil, 0444); err != nil {
+		t.Fatal(err)
+	}
 	e := mcpRefused(t, f, "publish_files", fileArgs("a.txt", "new", map[string]any{"token": v.Token, "label": "second"}))
 	if e.Hint == "" || strings.Contains(e.Error, f.a.s.root) {
 		t.Fatalf("error: %+v", e)
 	}
-	b, err := os.ReadFile(filepath.Join(f.a.s.public, v.Token, "a.txt"))
+	b, err := os.ReadFile(filepath.Join(container, "a.txt"))
 	if err != nil || string(b) != "old" {
 		t.Fatalf("old content lost: %q %v", b, err)
 	}
 	m, err := f.a.s.info(v.Token)
-	if err != nil || m.Label != "first" || m.UpdatedAt != nil {
-		t.Fatalf("manifest not restored: %+v %v", m, err)
+	if err != nil || m.Label != "first" || m.UpdatedAt != nil || m.Revision != "" {
+		t.Fatalf("manifest changed: %+v %v", m, err)
 	}
-	if st, err := os.Stat(filepath.Join(f.a.s.public, v.Token)); err != nil || st.Mode().Perm() != 0555 {
-		t.Fatalf("not frozen after failed swap: %v %v", st, err)
+	if st, err := os.Stat(container); err != nil || st.Mode().Perm() != 0555 {
+		t.Fatalf("not frozen: %v %v", st, err)
 	}
 }
 
@@ -853,5 +835,52 @@ func TestLifecycleURLFollowsBaseURL(t *testing.T) {
 	// begin_upload's upload_url is on B too.
 	if v := beginUpload(t, f, beginArgs([]byte("x"), map[string]any{"filename": "x.txt"})); !strings.HasPrefix(v.UploadURL, newBase+"/") {
 		t.Fatalf("upload_url %q", v.UploadURL)
+	}
+}
+
+func TestLifecycleRevisionsArePrivateFrozenAndReclaimed(t *testing.T) {
+	f := testAPI(t)
+	v, _ := mcpView(t, f, "publish_files", fileArgs("a.txt", "old", nil))
+	roots := []string{filepath.Join(f.a.s.public, v.Token)}
+	var previous string
+	for _, content := range []string{"second", "third"} {
+		up, raw := mcpView(t, f, "publish_files", fileArgs("a.txt", content, map[string]any{"token": v.Token}))
+		if up.Revision != "" || strings.Contains(raw, `"revision"`) {
+			t.Fatal("private revision leaked")
+		}
+		m, err := f.a.s.info(v.Token)
+		if err != nil || !validToken(m.Revision) || m.Revision == previous {
+			t.Fatalf("revision: %+v %v", m, err)
+		}
+		dir := f.a.s.releaseDir(m)
+		got, err := os.ReadFile(filepath.Join(dir, "a.txt"))
+		if err != nil || string(got) != content {
+			t.Fatalf("content: %q %v", got, err)
+		}
+		for _, root := range roots {
+			if _, err := os.Stat(filepath.Join(root, "a.txt")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("old root still serves content: %v", err)
+			}
+		}
+		roots = append(roots, dir)
+		for p := dir; p != f.a.s.public; p = filepath.Dir(p) {
+			st, err := os.Stat(p)
+			if err != nil || st.Mode().Perm() != 0555 {
+				t.Fatalf("revision directory not frozen: %s %v %v", p, st, err)
+			}
+		}
+		previous = m.Revision
+	}
+	revisions, err := os.ReadDir(filepath.Join(f.a.s.public, v.Token, ".revisions"))
+	if err != nil || len(revisions) != 1 {
+		t.Fatalf("old revisions survived: %d %v", len(revisions), err)
+	}
+	if _, err := f.a.s.deleteRelease(v.Token); err != nil {
+		t.Fatal(err)
+	}
+	for _, root := range roots {
+		if _, err := os.Stat(root); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("revision survived deletion: %v", err)
+		}
 	}
 }

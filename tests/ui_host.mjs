@@ -66,6 +66,16 @@ const HOST_PAGE = `<!doctype html><html><body style="margin:0">
     } else if (m.method === "tools/call") {
       const result = await window.__hostCall(m.params.name, m.params.arguments || {});
       send({ jsonrpc: "2.0", id: m.id, result });
+    } else if (m.method === "ui/message") {
+      // MCP Apps requires an array of content blocks, like tool results.
+      const p = m.params;
+      if (!p || p.role !== "user" || !Array.isArray(p.content) || !p.content.length ||
+          p.content.some((c) => !c || c.type !== "text" || typeof c.text !== "string")) {
+        console.error("invalid ui/message params");
+        send({ jsonrpc: "2.0", id: m.id, error: { code: -32602, message: "invalid ui/message params" } });
+      } else {
+        send({ jsonrpc: "2.0", id: m.id, result: {} });
+      }
     } else if (m.id !== undefined && typeof m.method === "string") {
       send({ jsonrpc: "2.0", id: m.id, result: {} });
     }
