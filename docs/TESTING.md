@@ -63,6 +63,11 @@ sweeper, the sweeper's re-check under the lock, legacy manifests that never expi
 content replaced, policy, label and expiry kept or replaced, immutable content
 revisions and failed revision activation, a missing or malformed token, idempotency with
 `token`), the `disk` report in `server_info` and the `list_releases` totals.
+The legacy-upgrade regression restarts on flat releases without a revision
+field, including an older manifest without expiry. It compares every stored
+file and permission, exact URLs, existing credentials and passwords, then
+updates one release and verifies that all others survive unchanged across
+another restart.
 It also publishes a single file and a website under one base URL, restarts on
 another and checks that `list_releases`, `release_info`, `set_expiry`, the
 password tools, the internal release core and an update all report the new one

@@ -8,9 +8,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"syscall"
 	"testing"
@@ -882,5 +884,128 @@ func TestLifecycleRevisionsArePrivateFrozenAndReclaimed(t *testing.T) {
 		if _, err := os.Stat(root); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("revision survived deletion: %v", err)
 		}
+	}
+}
+
+// Legacy releases have no revision field and store bytes at public/TOKEN.
+// Starting the candidate must not rewrite them or apply new expiry defaults.
+func TestLifecycleLegacyUpgradePreservesContentAndURLs(t *testing.T) {
+	f := lifecycleAPI(t, func(c *apiConfig) { c.DefaultExpiryDays = 60 })
+	site := publishAPI(t, f, `{"expires_in_days":0,"spa":true}`,
+		tarFixture{"index.html", 0, "existing site", nil},
+		tarFixture{"assets/app.js", 0, strings.Repeat("console.log('existing');\n", 100), nil})
+	protected := publishAPI(t, f, `{"expires_in_days":0,"password":"existing-password"}`,
+		tarFixture{"index.html", 0, "existing private site", nil}, tarFixture{"asset.txt", 0, "private asset", nil})
+	document := publishAPI(t, f, `{"expires_in_days":0}`,
+		tarFixture{"Annual report 2026.pdf", 0, "%PDF-existing report", nil})
+	releases := []releaseView{site, protected, document}
+	// A pre-expiry manifest must also remain non-expiring after the upgrade.
+	filename := filepath.Join(f.a.s.manifests, site.Token+".json")
+	raw, err := os.ReadFile(filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var legacy map[string]json.RawMessage
+	if err = json.Unmarshal(raw, &legacy); err != nil {
+		t.Fatal(err)
+	}
+	delete(legacy, "expires_at")
+	if err = writePrivateJSON(filename, legacy); err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range releases {
+		m, err := f.a.s.info(v.Token)
+		if err != nil || m.Revision != "" {
+			t.Fatalf("fixture is not a legacy release: %v", err)
+		}
+		raw, err := os.ReadFile(filepath.Join(f.a.s.manifests, v.Token+".json"))
+		if err != nil || bytes.Contains(raw, []byte(`"revision"`)) {
+			t.Fatal("fixture must omit revision")
+		}
+	}
+	type stored struct {
+		mode os.FileMode
+		data string
+	}
+	snapshot := func() map[string]stored {
+		t.Helper()
+		got := map[string]stored{}
+		for _, root := range []string{f.a.s.public, f.a.s.manifests, f.a.s.policies, f.tokens.path} {
+			err := filepath.WalkDir(root, func(p string, d fs.DirEntry, e error) error {
+				if e != nil {
+					return e
+				}
+				st, e := d.Info()
+				if e != nil {
+					return e
+				}
+				var b []byte
+				if !d.IsDir() {
+					b, e = os.ReadFile(p)
+					if e != nil {
+						return e
+					}
+				}
+				got[p] = stored{st.Mode(), string(b)}
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		return got
+	}
+	before := snapshot()
+	restart := func() {
+		t.Helper()
+		s, err := newStore(f.a.s.root, f.a.s.baseURL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tokens, err := newTokenStore(f.tokens.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		a, err := newAPIServer(s, tokens, f.a.cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.a, f.tokens = a, tokens
+	}
+	checkLinks := func() {
+		t.Helper()
+		for _, old := range releases {
+			info, _ := mcpView(t, f, "release_info", map[string]any{"token": old.Token})
+			if info.URL != old.URL || info.Token != old.Token || !info.CreatedAt.Equal(old.CreatedAt) || info.ExpiresAt != nil || info.Protected != old.Protected {
+				t.Fatal("upgrade changed a URL, identity, creation date, expiry or password status")
+			}
+		}
+		p, err := f.a.s.policy(protected.Token)
+		if err != nil || !p.Check("viewer", "existing-password") {
+			t.Fatal("existing visitor password stopped working")
+		}
+	}
+	restart()
+	checkLinks() // Uses the pre-upgrade management key, without creating a new one.
+	if !reflect.DeepEqual(snapshot(), before) {
+		t.Fatal("startup or reads changed existing stored bytes or permissions")
+	}
+	updated, _ := mcpView(t, f, "publish_files", fileArgs("index.html", "explicit replacement", map[string]any{"token": site.Token}))
+	if updated.URL != site.URL {
+		t.Fatal("updating the site changed its URL")
+	}
+	after := snapshot()
+	for p, old := range before {
+		if p == filepath.Join(f.a.s.manifests, site.Token+".json") || p == filepath.Join(f.a.s.public, site.Token) || strings.HasPrefix(p, filepath.Join(f.a.s.public, site.Token)+string(os.PathSeparator)) {
+			continue
+		}
+		if after[p] != old {
+			t.Fatal("updating one release changed another release, policy or credential")
+		}
+	}
+	restart()
+	checkLinks()
+	if !reflect.DeepEqual(snapshot(), after) {
+		t.Fatal("restart after an update changed persistent content")
 	}
 }

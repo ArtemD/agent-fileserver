@@ -226,20 +226,29 @@ it) until those links have aged out.
 updates use a new on-disk layout while release links stay the same. Existing
 releases remain readable without migration. Upgrade both containers together:
 
-1. Stop writers and Caddy with `docker compose down`, then back up the whole
-   data directory ([Backups and restore](#backups-and-restore)). Keep this
-   backup until you have verified the upgrade.
+1. Pause publishing clients and privately record the current release count,
+   tokens, exact URLs and file hashes for comparison. Stop both containers
+   with `docker compose down`, then back up the whole data directory
+   ([Backups and restore](#backups-and-restore)). Keep publishing paused until
+   verification finishes, and keep the backup until the upgrade is accepted.
 2. Check out `v0.6.0` and rebuild using the upgrade command above. Direct mode
    uses the same compose override as before. Do not run old Caddy routes with
    the new service or run an older service against updated content.
 3. Check `server_info`, `token list`, and `python3 tests/mcp_live.py`. The live
    suite updates synthetic releases and verifies their links and downloads.
-   Confirm that an existing release also opens with its existing credentials.
-4. To roll back, stop both containers, restore the entire pre-upgrade data
-   backup, check out the previous tag, then rebuild and repeat the checks.
-   Restoration discards releases and updates made after the backup. Older
-   versions cannot serve the new revision layout, so a code-only downgrade
-   after an update is not sufficient.
+   Keep `FSERVER_DOMAIN`, `FSERVER_BASE_URL` (where explicitly configured),
+   data mounts and credentials unchanged. Compare the release count, tokens,
+   exact URLs and file hashes with the pre-upgrade inventory, including a
+   protected release and a filename containing spaces. Existing releases are
+   not moved or rewritten during startup; only an explicit content update
+   creates a revision. Existing expiry dates still apply. Resume publishing
+   only after these checks pass.
+4. To roll back, stop both containers and preserve a second full backup of
+   the current data. If real publishing occurred since the pre-upgrade backup,
+   reconcile those writes before restoring; never discard them blindly. Once
+   they are safe, restore the pre-upgrade backup, check out the previous tag,
+   then rebuild and repeat the checks. Older versions cannot serve the new
+   revision layout, so a code-only downgrade after an update is not sufficient.
 
 **Upgrading to the release with accounts (0.5.0):** every key now belongs to
 an account and manages only that account's releases. Existing keys and releases
