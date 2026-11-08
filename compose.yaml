@@ -70,7 +70,7 @@ services:
   # Public edge: serves release bytes read-only and routes only /mcp and /_upload to the API.
   caddy:
     <<: *hardened
-    image: caddy:2.11.7-alpine
+    image: caddy:2.11.8-alpine
     user: "10002:10002"
     group_add: ["10001"]
     # The official binary carries a file capability; the kernel refuses to exec it
