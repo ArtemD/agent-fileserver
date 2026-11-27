@@ -10,6 +10,8 @@ Each release on GitHub also lists every commit and the issues it closed.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-27
+
 ### Added
 
 - Deleting a release, removing its password and updating it in place now ask
@@ -263,7 +265,8 @@ Each release on GitHub also lists every commit and the issues it closed.
   passwords, per-agent keys administered from the host, and hardened
   containers.
 
-[Unreleased]: https://github.com/ArtemD/agent-fileserver/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/ArtemD/agent-fileserver/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/ArtemD/agent-fileserver/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/ArtemD/agent-fileserver/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/ArtemD/agent-fileserver/compare/v0.5.2...v0.6.0
 [0.5.2]: https://github.com/ArtemD/agent-fileserver/compare/v0.5.1...v0.5.2
