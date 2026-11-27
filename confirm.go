@@ -14,8 +14,8 @@ package main
 //
 // No state is stored: requestState is an expiry plus an HMAC, under a
 // per-process random key, over the caller's account and key, the tool and the
-// arguments that identify the action. A restart drops pending confirmations,
-// which are then asked again.
+// complete tool arguments and the release state shown to the user. A restart
+// drops pending confirmations, which are then asked again.
 
 import (
 	"context"
@@ -24,8 +24,9 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"net/http"
+	"io/fs"
 	"strconv"
 	"strings"
 	"time"
@@ -43,14 +44,96 @@ const (
 )
 
 type mcpCallKey struct{}
+type releaseConfirmationKey struct{}
+
+var errConfirmationChanged = errors.New("release changed since confirmation")
 
 // confirmNote is added to the descriptions of the confirmed tools.
 const confirmNote = " Clients that support it ask the user to confirm first; if the user declines, nothing changes: do not retry unless the user asks."
 
 // confirmTarget names one action exactly; the requestState is bound to it.
 type confirmTarget struct {
-	Tool, Token, IdempotencyKey, SHA256 string
-	Size                                int64
+	Tool, Token string
+	Arguments   [sha256.Size]byte
+	Release     releaseConfirmation
+}
+
+// releaseConfirmation identifies the manifest and access policy together. It
+// stays inside the server, including when carried by a one-time upload ticket.
+type releaseConfirmation [sha256.Size]byte
+
+// confirmationSnapshot and check run with the store lock held. Use the bytes
+// even if they fail to parse, and distinguish an absent policy from one that
+// cannot be read safely. All three states can be used for deletion.
+func (s *store) confirmationSnapshot(m manifest) (releaseConfirmation, error) {
+	policy, err := s.policyBytes(m.Token)
+	snapshot := struct {
+		Release     manifest
+		PolicyState string
+		PolicyBytes [sha256.Size]byte
+	}{Release: m}
+	switch {
+	case err == nil:
+		snapshot.PolicyState = "present"
+		snapshot.PolicyBytes = sha256.Sum256(policy)
+		_, err = decodeAccessPolicy(policy)
+	case errors.Is(err, fs.ErrNotExist):
+		snapshot.PolicyState = "missing"
+	default:
+		snapshot.PolicyState = "unreadable"
+	}
+	data, _ := json.Marshal(snapshot)
+	return sha256.Sum256(data), err
+}
+
+func (c *releaseConfirmation) check(s *store, m manifest) error {
+	if c == nil {
+		return nil
+	}
+	current, _ := s.confirmationSnapshot(m)
+	if *c != current {
+		return errConfirmationChanged
+	}
+	return nil
+}
+
+// confirmPublishDigest hashes typed arguments independent of JSON formatting.
+// Keep the small fields in their normal JSON representation and stream bulk
+// strings into the hash to avoid making another full copy of an inline upload.
+func confirmPublishDigest(args mcpPublishArgs) [sha256.Size]byte {
+	archive, files := args.ArchiveBase64, args.Files
+	args.ArchiveBase64, args.Files = nil, nil
+	meta, _ := json.Marshal(args)
+	h := sha256.New()
+	_, _ = h.Write(meta)
+	var buf [32 << 10]byte
+	writeString := func(value *string) {
+		if value == nil {
+			_, _ = h.Write([]byte{0})
+			return
+		}
+		buf[0] = 1
+		_, _ = h.Write(binary.BigEndian.AppendUint64(buf[:1], uint64(len(*value))))
+		for remaining := *value; len(remaining) > 0; {
+			n := copy(buf[:], remaining)
+			_, _ = h.Write(buf[:n])
+			remaining = remaining[n:]
+		}
+	}
+	writeString(archive)
+	if files == nil {
+		_, _ = h.Write([]byte{0})
+	} else {
+		_, _ = h.Write([]byte{1})
+	}
+	for _, f := range files {
+		writeString(&f.Path)
+		writeString(f.Text)
+		writeString(f.ContentBase64)
+	}
+	var digest [sha256.Size]byte
+	h.Sum(digest[:0])
+	return digest
 }
 
 // clientCanConfirm reports whether this request's client said it can show a
@@ -70,13 +153,15 @@ func clientCanConfirm(req *mcp.CallToolRequest) bool {
 
 func (a *apiServer) confirmMAC(id agentIdentity, t confirmTarget, expiry int64) []byte {
 	m := hmac.New(sha256.New, a.confirmSecret[:])
-	for _, s := range []string{"agent-fileserver confirm v1", id.Account, id.ID, t.Tool, t.Token,
-		t.IdempotencyKey, t.SHA256, strconv.FormatInt(t.Size, 10), strconv.FormatInt(expiry, 10)} {
+	for _, s := range []string{"agent-fileserver confirm v2", id.Account, id.ID, t.Tool, t.Token,
+		strconv.FormatInt(expiry, 10)} {
 		var n [8]byte
 		binary.BigEndian.PutUint64(n[:], uint64(len(s)))
 		m.Write(n[:])
 		m.Write([]byte(s))
 	}
+	m.Write(t.Arguments[:])
+	m.Write(t.Release[:])
 	return m.Sum(nil)
 }
 
@@ -109,7 +194,7 @@ func confirmLabel(label string) string {
 	return label
 }
 
-func confirmPrompt(tool string, v releaseView) (message, checkbox string) {
+func confirmPrompt(tool string, v manifest) (message, checkbox string) {
 	name := "this release"
 	if label := confirmLabel(v.Label); label != "" {
 		name = fmt.Sprintf("the release %q", label)
@@ -127,38 +212,55 @@ func confirmPrompt(tool string, v releaseView) (message, checkbox string) {
 	}
 }
 
-// mcpConfirm returns nil when the action may go ahead, or the result to
-// return instead: a confirmation request, a refusal, or the lookup error.
-func (a *apiServer) mcpConfirm(ctx context.Context, parent *http.Request, t confirmTarget) *mcp.CallToolResult {
+func (s *store) confirmationTarget(token, account string) (manifest, releaseConfirmation, string) {
+	unlock, err := s.lock()
+	if err != nil {
+		return manifest{}, releaseConfirmation{}, "could not prepare the confirmation"
+	}
+	defer unlock()
+	m, err := s.activeManifest(token)
+	if err != nil || m.account() != account {
+		return manifest{}, releaseConfirmation{}, "release not found"
+	}
+	snapshot, err := s.confirmationSnapshot(m)
+	if err != nil {
+		return m, snapshot, "could not read release policy"
+	}
+	return m, snapshot, ""
+}
+
+// mcpConfirm attaches the approved release state to the in-process request.
+// A non-nil result is a prompt, refusal, or lookup error.
+func (a *apiServer) mcpConfirm(ctx context.Context, t confirmTarget, digest func() [sha256.Size]byte) (context.Context, *mcp.CallToolResult) {
 	req, _ := ctx.Value(mcpCallKey{}).(*mcp.CallToolRequest)
 	if !clientCanConfirm(req) || !validToken(t.Token) {
-		return nil // earlier behaviour; an invalid token is refused by the action itself
+		return ctx, nil // earlier behaviour; an invalid token is refused by the action itself
 	}
 	identity, ok := ctx.Value(mcpIdentityKey{}).(agentIdentity)
 	if !ok {
-		return mcpFailure("missing authenticated request")
+		return ctx, mcpFailure("missing authenticated request")
 	}
 	// Look the release up with the caller's account first: an unknown or
 	// other account's release is refused exactly as before, with no prompt.
-	w := a.mcpDispatch(ctx, parent, "GET", "/_api/v1/releases/"+t.Token, nil, "application/json", "", mcpOutputBytes)
-	if w.overflow || w.status != http.StatusOK {
-		return mcpAPIResult(w)
+	v, snapshot, failure := a.s.confirmationTarget(t.Token, identity.Account)
+	if failure != "" && (t.Tool != "delete_release" || failure != "could not read release policy") {
+		return ctx, mcpFailure(failure)
 	}
-	var v releaseView
-	if json.Unmarshal(w.body.Bytes(), &v) != nil {
-		return mcpFailure("could not prepare the confirmation")
+	t.Release = snapshot
+	if digest != nil {
+		t.Arguments = digest()
 	}
 	now := time.Now()
 	if answer, ok := req.Params.InputResponses[confirmInputID]; ok && a.confirmStateValid(identity, t, req.Params.RequestState, now) {
 		if r, _ := answer.(*mcp.ElicitResult); r != nil && r.Action == "accept" && r.Content["confirm"] == true {
-			return nil
+			return context.WithValue(ctx, releaseConfirmationKey{}, &snapshot), nil
 		}
-		return mcpFailure("cancelled: the user did not confirm")
+		return ctx, mcpFailure("cancelled: the user did not confirm")
 	}
 	// First call, or an answer without a valid state for this exact action
 	// (expired, tampered, from another call or a restart): ask (again).
 	message, checkbox := confirmPrompt(t.Tool, v)
-	return &mcp.CallToolResult{
+	return ctx, &mcp.CallToolResult{
 		InputRequests: mcp.InputRequestMap{confirmInputID: &mcp.ElicitParams{Mode: "form", Message: message,
 			RequestedSchema: map[string]any{"type": "object", "required": []string{"confirm"},
 				"properties": map[string]any{"confirm": map[string]any{"type": "boolean", "title": checkbox, "default": false}}}}},

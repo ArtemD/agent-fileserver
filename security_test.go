@@ -386,6 +386,74 @@ func TestPolicyPersistedPrivateAndManifestHasNoPassword(t *testing.T) {
 		t.Fatal("inactive token accepted")
 	}
 }
+
+func TestConfirmedDeleteAndPolicyRejectChangedReleaseState(t *testing.T) {
+	t.Run("delete", func(t *testing.T) {
+		s := testStore(t)
+		src := put(t, sourceDir(t), "index.html", []byte("fixture"))
+		m, _, err := s.publish(src, "", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, stale, failure := s.confirmationTarget(m.Token, defaultAccount); failure != "" {
+			t.Fatal(failure)
+		} else {
+			expires := time.Now().Add(time.Hour).UTC()
+			if _, err = s.setExpiry(m.Token, &expires); err != nil {
+				t.Fatal(err)
+			}
+			if _, err = s.deleteReleaseConfirmed(m.Token, &stale); !errors.Is(err, errConfirmationChanged) {
+				t.Fatalf("stale confirmation deleted release: %v", err)
+			}
+		}
+		if _, err = s.info(m.Token); err != nil {
+			t.Fatal("stale confirmation changed visibility", err)
+		}
+		if _, fresh, failure := s.confirmationTarget(m.Token, defaultAccount); failure != "" {
+			t.Fatal(failure)
+		} else if _, err = s.deleteReleaseConfirmed(m.Token, &fresh); err != nil {
+			t.Fatal("fresh confirmation did not delete release", err)
+		}
+	})
+
+	t.Run("policy", func(t *testing.T) {
+		s := testStore(t)
+		src := put(t, sourceDir(t), "index.html", []byte("fixture"))
+		protected, err := makeAccessPolicy("protected-password")
+		if err != nil {
+			t.Fatal(err)
+		}
+		m, _, err := s.publishWithPolicy(src, "", false, protected)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, stale, failure := s.confirmationTarget(m.Token, defaultAccount)
+		if failure != "" {
+			t.Fatal(failure)
+		}
+		public, _ := makeAccessPolicy("")
+		if err = s.setPolicy(m.Token, public); err != nil {
+			t.Fatal(err)
+		}
+		if err = s.setPolicyConfirmed(m.Token, protected, &stale); !errors.Is(err, errConfirmationChanged) {
+			t.Fatalf("stale confirmation changed policy: %v", err)
+		}
+		if got, err := s.policy(m.Token); err != nil || got.Protected {
+			t.Fatalf("stale confirmation changed policy visibility: %+v %v", got, err)
+		}
+		_, fresh, failure := s.confirmationTarget(m.Token, defaultAccount)
+		if failure != "" {
+			t.Fatal(failure)
+		}
+		if err = s.setPolicyConfirmed(m.Token, protected, &fresh); err != nil {
+			t.Fatal("fresh confirmation did not update policy", err)
+		}
+		if got, err := s.policy(m.Token); err != nil || !got.Check("viewer", "protected-password") {
+			t.Fatalf("fresh confirmation did not preserve requested policy: %+v %v", got, err)
+		}
+	})
+}
+
 func TestPolicyMissingMalformedAndInsecureFailClosed(t *testing.T) {
 	s := testStore(t)
 	src := put(t, sourceDir(t), "document.txt", []byte("fixture"))

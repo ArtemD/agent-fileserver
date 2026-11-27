@@ -84,7 +84,12 @@ content is validated, copied and frozen in staging, then installed under
 `public/TOKEN/.revisions/REVISION/TOKEN/`. The random revision name is never
 reused. A private manifest selects the active revision; an empty revision means
 the original flat `public/TOKEN/` layout. Existing releases need no migration.
-The target token and account are checked again under the publisher lock.
+For an update that carries an accepted confirmation, the target token, account,
+active content revision and access policy are checked again under the publisher
+lock. A ticketed confirmed update checks them when the ticket is minted and
+again when `PUT /_upload` consumes it, so a ticket never activates content
+against a release that changed in between. Normal updates keep their existing
+latest-state behavior.
 
 Authorization reads the manifest and access policy together under that lock.
 Its successful response selects the exact content root Caddy must use; Caddy
@@ -235,14 +240,25 @@ A tool argument could not do this, because the model writes the arguments.
 
 The server keeps no pending state. `requestState` is an expiry and an
 HMAC-SHA256, under a random key made at start, over the caller's account and
-key ID, the tool and the arguments that identify the action, valid 10 minutes.
-A tampered, expired or foreign state is not an error; the user is asked again.
-The release is looked up with the caller's account before any prompt, so
-account separation and `release not found` are unchanged, and the prompt holds
-only the release's own label (control and format characters removed, at most
-80 characters) and URL. A client that omits the capability, or answers the
-form itself, is limited exactly as before by its key: this is consent for
-honest clients, not an authentication layer.
+key ID, the tool and every typed argument that identifies the action, valid 10
+minutes. Each confirmed action also binds the release snapshot, including its
+active content revision and access policy. An update additionally binds the
+submitted content bytes or ticket digest. The publisher rechecks that snapshot
+under its write lock before applying the approved action, including when a
+ticket's later `PUT /_upload` activates content. A tampered, expired, foreign or
+stale state triggers another prompt with current release details. If the
+release changes between acceptance and the write, the action reports
+`release changed since confirmation`. With a ticket, HTTP 409 tells the client
+to call `begin_upload` again with the same arguments and idempotency key.
+
+The server checks the caller's account before showing a prompt. Unknown and
+foreign releases return `release not found`. The prompt includes the release
+URL and a label of at most 80 characters without control or format characters.
+Delete confirmation can read the release metadata even if its policy is
+missing or malformed, so the owner can remove it while visitors are denied.
+The approval distinguishes a missing policy from an invalid file and binds
+the file contents when they can be read safely.
+The management key still determines what the client can access.
 
 ## Credentials and privacy
 

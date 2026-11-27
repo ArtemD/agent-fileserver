@@ -221,29 +221,37 @@ func strictJSON(data []byte, out any) error {
 }
 
 func readPrivateJSON(path string, limit int64, out any) error {
-	if err := noSymlinkAncestors(path, false); err != nil {
+	data, err := readPrivateFile(path, limit)
+	if err != nil {
 		return err
+	}
+	return strictJSON(data, out)
+}
+
+func readPrivateFile(path string, limit int64) ([]byte, error) {
+	if err := noSymlinkAncestors(path, false); err != nil {
+		return nil, err
 	}
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer f.Close()
 	st, err := f.Stat()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if !st.Mode().IsRegular() || st.Mode().Perm() != 0600 || st.Size() > limit {
-		return fmt.Errorf("invalid private state file")
+		return nil, fmt.Errorf("invalid private state file")
 	}
 	data, err := io.ReadAll(io.LimitReader(f, limit+1))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if int64(len(data)) > limit {
-		return fmt.Errorf("private state exceeds size limit")
+		return nil, fmt.Errorf("private state exceeds size limit")
 	}
-	return strictJSON(data, out)
+	return data, nil
 }
 
 func (t *tokenStore) read() (tokenRegistry, error) {
@@ -559,12 +567,24 @@ func (s *store) policy(token string) (accessPolicy, error) {
 	return s.readPolicy(token)
 }
 func (s *store) readPolicy(token string) (accessPolicy, error) {
+	data, err := s.policyBytes(token)
+	if err != nil {
+		return accessPolicy{}, err
+	}
+	return decodeAccessPolicy(data)
+}
+
+func (s *store) policyBytes(token string) ([]byte, error) {
+	return readPrivateFile(filepath.Join(s.policies, token+".json"), 4096)
+}
+
+func decodeAccessPolicy(data []byte) (accessPolicy, error) {
 	var raw struct {
 		Protected    *bool      `json:"protected"`
 		PasswordHash string     `json:"password_hash,omitempty"`
 		UpdatedAt    *time.Time `json:"updated_at"`
 	}
-	if err := readPrivateJSON(filepath.Join(s.policies, token+".json"), 4096, &raw); err != nil {
+	if err := strictJSON(data, &raw); err != nil {
 		return accessPolicy{}, err
 	}
 	if raw.Protected == nil || raw.UpdatedAt == nil {
@@ -577,6 +597,10 @@ func (s *store) readPolicy(token string) (accessPolicy, error) {
 	return p, nil
 }
 func (s *store) setPolicy(token string, p accessPolicy) error {
+	return s.setPolicyConfirmed(token, p, nil)
+}
+
+func (s *store) setPolicyConfirmed(token string, p accessPolicy, confirmation *releaseConfirmation) error {
 	if err := p.validate(); err != nil {
 		return err
 	}
@@ -585,7 +609,11 @@ func (s *store) setPolicy(token string, p accessPolicy) error {
 		return err
 	}
 	defer unlock()
-	if _, err = s.activeManifest(token); err != nil {
+	m, err := s.activeManifest(token)
+	if err != nil {
+		return err
+	}
+	if err = confirmation.check(s, m); err != nil {
 		return err
 	}
 	return writePrivateJSON(filepath.Join(s.policies, token+".json"), p)
@@ -630,6 +658,10 @@ func (s *store) publishWithPolicy(source, label string, spa bool, p accessPolicy
 // Removal is selected-release-only. Historical soft-unpublish trash is untouched.
 // A cleanup error is reported after removal from serving, never hidden as success.
 func (s *store) deleteRelease(token string) (manifest, error) {
+	return s.deleteReleaseConfirmed(token, nil)
+}
+
+func (s *store) deleteReleaseConfirmed(token string, confirmation *releaseConfirmation) (manifest, error) {
 	unlock, err := s.lock()
 	if err != nil {
 		return manifest{}, err
@@ -637,6 +669,9 @@ func (s *store) deleteRelease(token string) (manifest, error) {
 	defer unlock()
 	m, err := s.activeManifest(token)
 	if err != nil {
+		return m, err
+	}
+	if err = confirmation.check(s, m); err != nil {
 		return m, err
 	}
 	return m, s.deleteLocked(token)

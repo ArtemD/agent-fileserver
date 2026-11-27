@@ -10,6 +10,12 @@ Each release on GitHub also lists every commit and the issues it closed.
 
 ## [Unreleased]
 
+### Fixed
+
+- Release confirmations cover the full update and expire when the release
+  changes. Owners can confirm deletion even if the access policy is damaged.
+  ([GHSA-pm6w-f9pv-cpx7](https://github.com/ArtemD/agent-fileserver/security/advisories/GHSA-pm6w-f9pv-cpx7))
+
 ## [0.7.0] - 2026-11-27
 
 ### Added

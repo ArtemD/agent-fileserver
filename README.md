@@ -275,7 +275,8 @@ published before this feature never expire. Details:
   you trust, and never reuse company production login cookies here.
 - Deleting a release, removing its password or replacing its content asks you
   to confirm in Claude (and any client with MCP 2026-07-28 elicitation), so a
-  model cannot do it on its own. Other clients behave as before.
+  model cannot do it on its own. If the release changes while you decide, the
+  server asks you again. See [Confirmations](docs/MCP.md#confirmations).
 - Deletion, including automatic deletion at expiry, is permanent at the origin;
   it can't recall downloads or caches.
 - Upload tickets are 256-bit, single-use, expire after 30 minutes, work only on

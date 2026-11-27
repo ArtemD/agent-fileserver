@@ -54,14 +54,20 @@ secret-free audits. Fuzz seed/parser tests run in the default suite.
 `delete_release`, `remove_password`, `publish_files` with `token` and
 `begin_upload` with `token` return `input_required` with a form naming the
 release, and change nothing until an acceptance with `confirm: true` and a
-valid `requestState`; `decline`, `cancel` and an unticked box refuse with a
-hint; an empty, malformed, tampered, other release's, other tool's, other
-key's or other update's state asks again; the state expires and does not
-survive a new server key; labels are cleaned for the prompt; new releases and
+valid current `requestState`; every confirmed action binds the release's
+content revision and access policy, and updates also bind every typed argument,
+submitted bytes or ticket digest. `decline`, `cancel` and an unticked box
+refuse with a hint; an empty, malformed, tampered, other release's, other
+tool's, other key's, other update's or stale release state asks again. A later
+winner under the write lock returns `release changed since confirmation`,
+including a delayed ticket `PUT`. The state expires and does not survive a new
+server key; labels are cleaned for the prompt; new releases and
 `reset_password` are not asked; clients without the capability and 2025-06-18
 clients behave as before; unknown and other accounts' tokens get `release not
 found` without a prompt; and the official Go SDK client with an elicitation
-handler completes (accept) or refuses (decline) the flow end to end.
+handler completes (accept) or refuses (decline) the flow end to end. It also
+checks that an owner can confirm deletion when the release's private access
+policy is missing or malformed.
 
 `ui_test.go` covers the MCP Apps side: the three `ui://agent-fileserver/*`
 resources (MIME type `text/html;profile=mcp-app`, `_meta.ui` with
@@ -189,7 +195,10 @@ list, read, change or delete them. Shared helper: `tests/mcp_fixture.py`.
   without its `_meta` version or with the removed handshake is refused.
   Through the same edge it walks a confirmation: `delete_release` and
   `remove_password` ask and a decline changes nothing, an update in place
-  waits for acceptance, and an accepted delete removes the release.
+  waits for acceptance, a policy change makes an accepted old form ask again,
+  and an accepted delete removes the release. A delayed ticket cannot update
+  a changed release. After fresh confirmation, the same idempotency key works
+  with the replacement ticket.
 
 Knobs: `FSERVER_TEST_BASE` (default `http://localhost:8000`) and
 `FSERVER_TEST_RESOLVE=HOST:443:PUBLIC_IP`, which makes curl use the real public
@@ -242,7 +251,9 @@ it outside the repository as above (CI uses `$RUNNER_TEMP/pw`). Use another
 - `ui_upload.test.mjs`: pick or drop a file, SHA-256, the `begin_upload` call
   with the tool's options, the `PUT` with progress, the shown release, the
   message to the agent, archives as sites versus *Publish as one file*, and
-  refused or failed uploads.
+  refused or failed uploads. At both phone widths, a changed release shows the
+  server's retry hint and *Try again* asks for a fresh ticket with the same
+  file and settings.
 - The card and dashboard tests check that tool data is rendered as text (a
   label containing markup stays inert) and that an unlabelled flat archive is
   titled "Website"; the upload tests check that the password and the upload

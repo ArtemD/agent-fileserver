@@ -3,9 +3,12 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -90,6 +93,14 @@ func asked(t *testing.T, r confirmReply, v releaseView, wantText string) {
 
 func accepted(confirm any) map[string]any {
 	return map[string]any{"action": "accept", "content": map[string]any{"confirm": confirm}}
+}
+
+func copyConfirmArgs(args map[string]any) map[string]any {
+	copy := make(map[string]any, len(args))
+	for key, value := range args {
+		copy[key] = value
+	}
+	return copy
 }
 
 func releaseExists(t *testing.T, f apiFixture, token string) bool {
@@ -197,6 +208,176 @@ func TestConfirmRemovePasswordAndUpdates(t *testing.T) {
 	// set_password and reset_password are not confirmed.
 	if r = confirmCall(t, f, "reset_password", args, true, nil, ""); r.ResultType != "complete" || r.IsError {
 		t.Fatalf("reset_password asked: %s", r.Raw)
+	}
+}
+
+func TestConfirmBindsEveryUpdateField(t *testing.T) {
+	f := testAPI(t)
+	v := mcpPublishFile(t, f, pageArgs("original", nil))
+
+	inline := pageArgs("inline", map[string]any{"token": v.Token})
+	inlineState := confirmCall(t, f, "publish_files", inline, true, nil, "")
+	asked(t, inlineState, v, "Replace the content")
+	for name, value := range map[string]any{
+		"files":           []map[string]any{{"path": "index.html", "text": "changed"}},
+		"label":           "changed label",
+		"spa":             true,
+		"password":        "new-password",
+		"expires_in_days": 7,
+	} {
+		t.Run("inline "+name, func(t *testing.T) {
+			changed := copyConfirmArgs(inline)
+			changed[name] = value
+			asked(t, confirmCall(t, f, "publish_files", changed, true, accepted(true), inlineState.RequestState), v, "Replace the content")
+		})
+	}
+
+	archive := base64.StdEncoding.EncodeToString(fixtureZIP(t, zipFile("index.html", "archive")))
+	archiveArgs := map[string]any{"archive_base64": archive, "idempotency_key": requestID(), "token": v.Token}
+	archiveState := confirmCall(t, f, "publish_archive", archiveArgs, true, nil, "")
+	asked(t, archiveState, v, "Replace the content")
+	for name, value := range map[string]any{
+		"archive_base64":  base64.StdEncoding.EncodeToString(fixtureZIP(t, zipFile("index.html", "changed archive"))),
+		"label":           "changed label",
+		"spa":             true,
+		"password":        "new-password",
+		"expires_in_days": 7,
+	} {
+		t.Run("archive "+name, func(t *testing.T) {
+			changed := copyConfirmArgs(archiveArgs)
+			changed[name] = value
+			asked(t, confirmCall(t, f, "publish_archive", changed, true, accepted(true), archiveState.RequestState), v, "Replace the content")
+		})
+	}
+
+	ticket := map[string]any{"size": 5, "sha256": strings.Repeat("a", 64), "idempotency_key": requestID(), "token": v.Token}
+	ticketState := confirmCall(t, f, "begin_upload", ticket, true, nil, "")
+	asked(t, ticketState, v, "Replace the content")
+	for name, value := range map[string]any{
+		"size":            6,
+		"sha256":          strings.Repeat("b", 64),
+		"filename":        "index.html",
+		"label":           "changed label",
+		"spa":             true,
+		"password":        "new-password",
+		"expires_in_days": 7,
+	} {
+		t.Run("ticket "+name, func(t *testing.T) {
+			changed := copyConfirmArgs(ticket)
+			changed[name] = value
+			asked(t, confirmCall(t, f, "begin_upload", changed, true, accepted(true), ticketState.RequestState), v, "Replace the content")
+		})
+	}
+}
+
+func TestConfirmRequiresFreshStateAfterReleaseChanges(t *testing.T) {
+	f := testAPI(t)
+	v := mcpPublishFile(t, f, pageArgs("original", map[string]any{"password": "original-password"}))
+	update := pageArgs("confirmed", map[string]any{"token": v.Token})
+	state := confirmCall(t, f, "publish_files", update, true, nil, "")
+	asked(t, state, v, "Replace the content")
+
+	// This is the same account acting through a client without elicitation.
+	// It simulates a normal concurrent update, not an unauthenticated change.
+	mcpPublishFile(t, f, pageArgs("concurrent content", map[string]any{"token": v.Token}))
+	asked(t, confirmCall(t, f, "publish_files", update, true, accepted(true), state.RequestState), v, "Replace the content")
+
+	remove := confirmCall(t, f, "remove_password", map[string]any{"token": v.Token}, true, nil, "")
+	asked(t, remove, v, "Anyone with the link")
+	mcpTool(t, f, "set_password", map[string]any{"token": v.Token, "password": "replaced-password"}, false)
+	asked(t, confirmCall(t, f, "remove_password", map[string]any{"token": v.Token}, true, accepted(true), remove.RequestState), v, "Anyone with the link")
+}
+
+func TestConfirmTicketRefusesChangedRelease(t *testing.T) {
+	f := testAPI(t)
+	v := mcpPublishFile(t, f, pageArgs("original", map[string]any{"password": "old-password"}))
+	data := []byte("hello")
+	ticketArgs := beginArgs(data, map[string]any{"filename": "index.html", "token": v.Token})
+	confirmation := confirmCall(t, f, "begin_upload", ticketArgs, true, nil, "")
+	asked(t, confirmation, v, "Replace the content")
+	done := confirmCall(t, f, "begin_upload", ticketArgs, true, accepted(true), confirmation.RequestState)
+	if done.IsError {
+		t.Fatalf("confirmed ticket: %s", done.Raw)
+	}
+	var ticket uploadTicketView
+	if err := json.Unmarshal([]byte(done.Text), &ticket); err != nil || ticket.Headers["Authorization"] == "" {
+		t.Fatalf("ticket %s: %v", done.Raw, err)
+	}
+
+	mcpPublishFile(t, f, pageArgs("concurrent content", map[string]any{"token": v.Token}))
+	w := putTicket(f, ticket, data)
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), `"error":"release changed since confirmation"`) ||
+		!strings.Contains(w.Body.String(), `"hint":`) {
+		t.Fatalf("stale ticket: %d %s", w.Code, w.Body)
+	}
+	// The stale ticket did not weaken the old policy or replace its current bytes.
+	authorize := httptest.NewRequest("GET", "/_internal/authorize", nil)
+	authorize.Header.Set("X-Forwarded-Uri", "/"+v.Token+"/index.html")
+	authorize.Header.Set("X-Fserver-Client-IP", "192.0.2.1")
+	authorize.SetBasicAuth("viewer", "old-password")
+	authorized := httptest.NewRecorder()
+	f.a.ServeHTTP(authorized, authorize)
+	if authorized.Code != http.StatusNoContent || authorized.Header().Get("X-Fserver-Cache-Control") != "private, no-store" {
+		t.Fatalf("old policy after stale ticket: %d %s", authorized.Code, authorized.Header())
+	}
+	var current struct {
+		ContentBase64 string `json:"content_base64"`
+	}
+	if raw := mcpTool(t, f, "download_release", map[string]any{"token": v.Token}, false); json.Unmarshal(raw, &current) != nil {
+		t.Fatalf("current release: %s", raw)
+	} else if bytes, err := base64.StdEncoding.DecodeString(current.ContentBase64); err != nil || !strings.Contains(string(bytes), "concurrent content") {
+		t.Fatalf("old content after stale ticket: %q (%v)", bytes, err)
+	}
+
+	fresh := confirmCall(t, f, "begin_upload", ticketArgs, true, nil, "")
+	asked(t, fresh, v, "Replace the content")
+	done = confirmCall(t, f, "begin_upload", ticketArgs, true, accepted(true), fresh.RequestState)
+	if done.IsError {
+		t.Fatalf("fresh confirmed ticket: %s", done.Raw)
+	}
+	if err := json.Unmarshal([]byte(done.Text), &ticket); err != nil || ticket.Headers["Authorization"] == "" {
+		t.Fatalf("fresh ticket %s: %v", done.Raw, err)
+	}
+	if retried := putTicket(f, ticket, data); retried.Code != http.StatusCreated {
+		t.Fatalf("same key after fresh approval: %d %s", retried.Code, retried.Body)
+	}
+}
+
+func TestConfirmDeleteSurvivesUnreadablePolicy(t *testing.T) {
+	broken := []byte(`{"protected":`)
+	for name, change := range map[string]struct{ before, after []byte }{
+		"missing to malformed":      {nil, broken},
+		"malformed to missing":      {broken, nil},
+		"malformed contents change": {broken, []byte(`{"updated_at":`)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := testAPI(t)
+			v := mcpPublishFile(t, f, pageArgs("keep", nil))
+			path := filepath.Join(f.a.s.policies, v.Token+".json")
+			writePolicy := func(data []byte) {
+				t.Helper()
+				var err error
+				if data == nil {
+					err = os.Remove(path)
+				} else {
+					err = os.WriteFile(path, data, 0600)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			args := map[string]any{"token": v.Token}
+			writePolicy(change.before)
+			confirmation := confirmCall(t, f, "delete_release", args, true, nil, "")
+			asked(t, confirmation, v, "Delete")
+			writePolicy(change.after)
+			fresh := confirmCall(t, f, "delete_release", args, true, accepted(true), confirmation.RequestState)
+			asked(t, fresh, v, "Delete")
+			done := confirmCall(t, f, "delete_release", args, true, accepted(true), fresh.RequestState)
+			if _, err := f.a.s.info(v.Token); done.IsError || err == nil {
+				t.Fatalf("delete with %s policy: %s", name, done.Raw)
+			}
+		})
 	}
 }
 

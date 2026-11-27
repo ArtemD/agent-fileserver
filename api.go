@@ -567,6 +567,7 @@ func (a *apiServer) ServeHTTP(out http.ResponseWriter, r *http.Request) {
 		apiError(w, 404, id, "release not found")
 		return
 	}
+	confirmation, _ := r.Context().Value(releaseConfirmationKey{}).(*releaseConfirmation)
 	switch suffix {
 	case "":
 		if r.Method == "GET" {
@@ -579,7 +580,10 @@ func (a *apiServer) ServeHTTP(out http.ResponseWriter, r *http.Request) {
 			apiJSON(w, 200, v)
 		} else {
 			operation = "delete"
-			if _, e = a.s.deleteRelease(token); e != nil {
+			if _, e = a.s.deleteReleaseConfirmed(token, confirmation); errors.Is(e, errConfirmationChanged) {
+				apiError(w, 409, id, "release changed since confirmation")
+				return
+			} else if e != nil {
 				apiError(w, 500, id, "could not delete release")
 				return
 			}
@@ -794,7 +798,11 @@ func (a *apiServer) password(w http.ResponseWriter, r *http.Request, id string, 
 		apiError(w, 400, id, "password must be 8 to 72 UTF-8 bytes without control characters")
 		return
 	}
-	if e = a.s.setPolicy(m.Token, p); e != nil {
+	confirmation, _ := r.Context().Value(releaseConfirmationKey{}).(*releaseConfirmation)
+	if e = a.s.setPolicyConfirmed(m.Token, p, confirmation); errors.Is(e, errConfirmationChanged) {
+		apiError(w, 409, id, "release changed since confirmation")
+		return
+	} else if e != nil {
 		apiError(w, 500, id, "could not update release policy")
 		return
 	}
@@ -957,7 +965,8 @@ func (a *apiServer) upload(w http.ResponseWriter, r *http.Request, id string, id
 		apiError(w, 400, id, "unexpected data after multipart body")
 		return
 	}
-	a.publishSpool(ctx, w, id, identity, key, meta, policy, f, hex.EncodeToString(h.Sum(nil)), limits)
+	confirmation, _ := ctx.Value(releaseConfirmationKey{}).(*releaseConfirmation)
+	a.publishSpool(ctx, w, id, identity, key, meta, policy, f, hex.EncodeToString(h.Sum(nil)), limits, confirmation)
 }
 
 // spoolDigest starts the idempotency digest: canonical metadata without the
@@ -974,7 +983,7 @@ func spoolDigest(meta uploadMetadata) hash.Hash {
 // publishSpool turns a fully received private spool into a release: the
 // idempotency record, extraction, publisher validation and activation are the
 // same for MCP publishes and ticket uploads. The caller holds the publisher slot.
-func (a *apiServer) publishSpool(ctx context.Context, w http.ResponseWriter, id string, identity agentIdentity, key string, meta uploadMetadata, policy accessPolicy, f *os.File, digest string, limits apiConfig) {
+func (a *apiServer) publishSpool(ctx context.Context, w http.ResponseWriter, id string, identity agentIdentity, key string, meta uploadMetadata, policy accessPolicy, f *os.File, digest string, limits apiConfig, confirmation *releaseConfirmation) {
 	kh := sha256.Sum256([]byte(identity.ID + "\x00" + key))
 	rp := filepath.Join(a.state, hex.EncodeToString(kh[:])+".json")
 	old, e := readReplay(rp)
@@ -1068,11 +1077,21 @@ func (a *apiServer) publishSpool(ctx context.Context, w http.ResponseWriter, id 
 		return
 	}
 	record := apiReplay{Created: time.Now().UTC(), Digest: digest, State: "pending", PasswordHash: policy.PasswordHash}
-	if e = a.writeReplay(rp, record); e != nil {
+	var intentWritten bool
+	var intentErr error
+	persistIntent := func() error {
+		intentErr = a.writeReplay(rp, record)
+		intentWritten = intentErr == nil
+		return intentErr
+	}
+	opts := releaseOptions{Label: meta.Label, SPA: meta.SPA, Policy: &policy, Replace: meta.Token, Owner: identity.Account,
+		Confirmation: confirmation}
+	if confirmation != nil {
+		opts.BeforeReplace = persistIntent
+	} else if persistIntent() != nil {
 		apiError(w, 500, id, "could not persist publish intent")
 		return
 	}
-	opts := releaseOptions{Label: meta.Label, SPA: meta.SPA, Policy: &policy, Replace: meta.Token, Owner: identity.Account}
 	// An update without a password keeps the current access policy; removing
 	// a password stays an explicit remove_password call.
 	if meta.Token != "" && meta.Password == "" {
@@ -1080,6 +1099,18 @@ func (a *apiServer) publishSpool(ctx context.Context, w http.ResponseWriter, id 
 	}
 	opts.ExpiresAt, opts.KeepExpiry, _ = a.expiresAt(meta.ExpiresInDays, meta.Token != "", time.Now())
 	m, _, e := a.s.publishRelease(ctx, source, opts)
+	if errors.Is(e, errConfirmationChanged) {
+		apiError(w, 409, id, "release changed since confirmation")
+		return
+	}
+	if intentErr != nil {
+		apiError(w, 500, id, "could not persist publish intent")
+		return
+	}
+	if e != nil && !intentWritten {
+		apiError(w, 500, id, "could not prepare confirmed publish")
+		return
+	}
 	if rw, ok := w.(*apiResponse); ok && validToken(m.Token) {
 		rw.release = m.Token
 	}

@@ -417,6 +417,12 @@ type releaseOptions struct {
 	ExpiresAt  *time.Time
 	KeepExpiry bool
 	Replace    string
+	// Confirmation is checked while holding the release lock before an
+	// in-place replacement changes the active release.
+	Confirmation *releaseConfirmation
+	// BeforeReplace records durable publish intent after the guarded target
+	// check, immediately before the active release is changed.
+	BeforeReplace func() error
 	// Owner is the publishing account; empty means the default account.
 	Owner string
 }
@@ -610,6 +616,9 @@ func (s *store) replaceLocked(ctx context.Context, r *stagedRelease, o releaseOp
 	if old.account() != accountOf(o.Owner) {
 		return manifest{}, errNotOwner
 	}
+	if err = o.Confirmation.check(s, old); err != nil {
+		return manifest{}, err
+	}
 	m := old
 	m.Files, m.Bytes, m.SPA = r.files, r.bytes, o.SPA
 	m.SourceBasename = r.name
@@ -632,6 +641,11 @@ func (s *store) replaceLocked(ctx context.Context, r *stagedRelease, o releaseOp
 	}
 	if err = ctx.Err(); err != nil {
 		return old, err
+	}
+	if o.BeforeReplace != nil {
+		if err = o.BeforeReplace(); err != nil {
+			return old, err
+		}
 	}
 	container := filepath.Join(s.public, m.Token)
 	if err = os.Chmod(container, 0755); err != nil {

@@ -42,6 +42,7 @@ type uploadTicket struct {
 	sha256                       [32]byte
 	filename, key                string
 	meta                         uploadMetadata
+	confirmation                 *releaseConfirmation
 	expires                      time.Time
 }
 
@@ -138,8 +139,9 @@ func (a *apiServer) beginUpload(w http.ResponseWriter, r *http.Request, id strin
 		apiError(w, 507, id, "insufficient free disk space")
 		return
 	}
+	confirmation, _ := r.Context().Value(releaseConfirmationKey{}).(*releaseConfirmation)
 	t := uploadTicket{agentID: identity.ID, agentLabel: identity.Label, account: identity.Account, size: req.Size, filename: req.Filename,
-		key: req.IdempotencyKey, meta: meta}
+		key: req.IdempotencyKey, meta: meta, confirmation: confirmation}
 	copy(t.sha256[:], sum)
 	raw, expires, err := a.mintTicket(t, time.Now())
 	if errors.Is(err, errUploadTicketsFull) {
@@ -346,5 +348,5 @@ func (a *apiServer) serveUpload(w http.ResponseWriter, r *http.Request, id strin
 		return
 	}
 	identity := agentIdentity{ID: t.agentID, Label: t.agentLabel, Account: t.account}
-	a.publishSpool(ctx, w, id, identity, t.key, t.meta, policy, f, hex.EncodeToString(digest.Sum(nil)), limits)
+	a.publishSpool(ctx, w, id, identity, t.key, t.meta, policy, f, hex.EncodeToString(digest.Sum(nil)), limits, t.confirmation)
 }

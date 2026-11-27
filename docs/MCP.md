@@ -207,7 +207,7 @@ sends the raw bytes with a single `PUT`.
 | `label` | string, optional | At most 200 characters |
 | `spa` | boolean, optional | Archives only; not allowed with `filename` |
 | `password` | string, optional | Visitor password, 8–72 UTF-8 bytes; the release is public without it |
-| `token` | string, optional | Update this existing release in place instead of creating one; see [Update a release in place](#update-a-release-in-place). Checked when the ticket is minted and again at the `PUT` |
+| `token` | string, optional | Update this existing release in place instead of creating one; see [Update a release in place](#update-a-release-in-place). Its current content revision and access policy are checked when the ticket is minted and again under the publisher lock at the `PUT` |
 | `expires_in_days` | integer, optional | 0 to 3650; 0 = never expire. Omitted: the server default for a new release, the current expiry for an update; see [Expiry](#expiry) |
 
 Result:
@@ -269,7 +269,7 @@ settings, even if the host later sends different tool inputs.
 | 401 | Ticket missing, unknown, used, expired or revoked, or a management key was sent (`WWW-Authenticate: Bearer`) |
 | 404 | Another path, a query string, or an update whose `token` release no longer exists (`release not found`) |
 | 405 | Method other than `PUT` or `OPTIONS` |
-| 409 | Idempotency key reused with different bytes or metadata, or the earlier outcome is ambiguous |
+| 409 | Idempotency conflict, earlier outcome ambiguous, or `release changed since confirmation` |
 | 413 | `Content-Length` larger than declared, or archive limits (size, extracted size, entries) exceeded |
 | 422 | `publisher refused artifact` (hidden files, secrets, links, …), or `spa` without a root `index.html` |
 | 429 | Another upload in progress, too many bad tickets from this IP (10/minute, shared with `/mcp`), or the publish rate limit (30/hour/key) |
@@ -411,11 +411,20 @@ client capabilities declare form elicitation (as Claude does). Then:
    or an unticked box returns `cancelled: the user did not confirm` and changes
    nothing.
 
-`requestState` is valid for 10 minutes, for that key, tool and exact action
-(token, plus `idempotency_key`, `size` and `sha256` for updates). Without a
-valid one the server simply asks again, also after a restart. New releases,
-`set_password`, `reset_password` and `set_expiry` are not confirmed.
+`requestState` is valid for 10 minutes, for that key, tool and exact action.
+For all three confirmed actions it binds the release snapshot, including its
+active content revision and access policy. For an update it also binds every
+typed update argument and the submitted content bytes or ticket digest. The
+server checks this snapshot again under its publisher lock only for an action
+that carries an accepted confirmation, including when a ticket later reaches
+`PUT /_upload`. If the release has changed when the server reads the reply, it
+asks again with a fresh form. It also asks again after a restart. If the release
+changes between acceptance and the write, the tool reports
+`release changed since confirmation`. A ticket upload reports the same error
+with HTTP 409. Call `begin_upload` again with the same arguments and idempotency
+key, complete the fresh confirmation, then use the new ticket.
 
+New releases, `set_password`, `reset_password` and `set_expiry` run immediately.
 Clients that do not declare elicitation, and all earlier protocol versions,
 behave as before. This protects people using an honest client; a client that
 answers the form itself gets no further than its key allows. The releases

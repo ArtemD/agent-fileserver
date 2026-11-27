@@ -1375,9 +1375,63 @@ class MCPLive(unittest.TestCase):
         check(asked.get("resultType") == "input_required", "update in place was not confirmed")
         status, _, _ = self.request("/" + token + "/index.html", anonymous=True)
         check(status == 401, "update or password change happened before confirmation")
+        replacement = secrets.token_urlsafe(18)
+        self.tool("set_password", {"token": token, "password": replacement})
+        stale = self.confirm_call("publish_files", update,
+                                  {"action": "accept", "content": {"confirm": True}}, asked["requestState"])
+        check(stale.get("resultType") == "input_required" and stale.get("requestState")
+              and stale.get("requestState") != asked["requestState"],
+              "a stale confirmation after an access-policy change did not ask again")
+        status, _, _ = self.request("/" + token + "/index.html", anonymous=True)
+        check(status == 401, "a stale confirmation changed the protected release")
         done = self.confirm_call("publish_files", update,
-                                 {"action": "accept", "content": {"confirm": True}}, asked["requestState"])
+                                 {"action": "accept", "content": {"confirm": True}}, stale["requestState"])
         check(done.get("resultType") == "complete" and not done.get("isError"), "confirmed update failed")
+        current_page = update["files"][0]["text"].encode()
+        self.public_bytes(token, "index.html", current_page, password=replacement)
+
+        ticket_page = b"<!doctype html><title>Confirmed ticket</title><p>" + secrets.token_hex(8).encode() + b"</p>"
+        ticket_args = {"token": token, "filename": "index.html", "size": len(ticket_page),
+                       "sha256": hashlib.sha256(ticket_page).hexdigest(),
+                       "idempotency_key": secrets.token_urlsafe(24)}
+        asked = self.confirm_call("begin_upload", ticket_args)
+        check(asked.get("resultType") == "input_required", "ticket update was not confirmed")
+        ticket_result = self.confirm_call("begin_upload", ticket_args,
+                                          {"action": "accept", "content": {"confirm": True}}, asked["requestState"])
+        check(ticket_result.get("resultType") == "complete" and not ticket_result.get("isError"),
+              "accepted ticket update was not minted")
+        try:
+            delayed_ticket = json.loads((ticket_result.get("content") or [{}])[0].get("text", "{}"))
+        except (ValueError, AttributeError, IndexError):
+            raise LiveFailure("accepted ticket update returned invalid JSON") from None
+        check(isinstance(delayed_ticket, dict), "accepted ticket update returned no ticket")
+
+        ticket_password = secrets.token_urlsafe(18)
+        self.tool("set_password", {"token": token, "password": ticket_password})
+        ticket_path = self.write_fixture("confirmed-ticket.html", ticket_page)
+        status, _, body = self.put_upload(delayed_ticket, ticket_path)
+        try:
+            delayed_error = json.loads(body)
+        except ValueError:
+            raise LiveFailure("stale ticket update returned invalid JSON") from None
+        check(status == 409 and delayed_error.get("error") == "release changed since confirmation"
+              and delayed_error.get("hint"), "stale ticket update was not refused")
+        self.public_bytes(token, "index.html", current_page, password=ticket_password)
+
+        asked = self.confirm_call("begin_upload", ticket_args)
+        check(asked.get("resultType") == "input_required", "replacement ticket was not confirmed")
+        ticket_result = self.confirm_call("begin_upload", ticket_args,
+                                          {"action": "accept", "content": {"confirm": True}}, asked["requestState"])
+        check(ticket_result.get("resultType") == "complete" and not ticket_result.get("isError"),
+              "replacement ticket was not minted")
+        try:
+            fresh_ticket = json.loads((ticket_result.get("content") or [{}])[0].get("text", "{}"))
+        except (ValueError, AttributeError, IndexError):
+            raise LiveFailure("replacement ticket returned invalid JSON") from None
+        status, _, body = self.put_upload(fresh_ticket, ticket_path)
+        ticket_view = self.uploaded_release(status, body, "confirmed ticket update")
+        check(ticket_view.get("token") == token, "confirmed ticket update changed the release token")
+        self.public_bytes(token, "index.html", ticket_page, password=ticket_password)
         asked = self.confirm_call("delete_release", {"token": token})
         done = self.confirm_call("delete_release", {"token": token},
                                  {"action": "accept", "content": {"confirm": True}}, asked["requestState"])

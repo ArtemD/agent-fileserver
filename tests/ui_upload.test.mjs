@@ -249,6 +249,41 @@ const tests = {
     await t.panel.close();
   },
 
+  "a stale confirmed update asks for a fresh ticket and keeps the full request": async () => {
+    for (const phone of PHONES) {
+      const t = await setup({
+        phone,
+        options: { label: "Current site", password: PASSWORD, expires_in_days: 7, token: TOKEN22, spa: true },
+        put: (n) => n === 1
+          ? { status: 409, json: {
+            error: "release changed since confirmation",
+            hint: "The content or release settings changed before the approved action ran. Check release_info and ask the user to confirm the current release. For a ticket upload, call begin_upload again with the same arguments.",
+          } }
+          : { status: 201, json: releaseView({ label: "Current site", protected: true }) },
+      });
+      const f = t.panel.frame;
+      await pick(t, makeFile("site.zip", zipBytes));
+      await publishBtn(f).click();
+      await f.getByRole("button", { name: "Try again" }).waitFor();
+      const failed = await text(f);
+      assert.match(failed, /release changed since confirmation/);
+      assert.match(failed, /call begin_upload again with the same arguments/i);
+      await expectPhoneFit(t.panel, "stale confirmed update");
+
+      await f.getByRole("button", { name: "Try again" }).click();
+      await f.waitForSelector("#result");
+      assert.equal(t.begins.length, 2, "retry requests a fresh ticket");
+      assert.deepEqual(t.begins[1].args, t.begins[0].args, "retry preserves every authorized update setting");
+      assert.notEqual(t.puts[1].auth, t.puts[0].auth, "fresh ticket uses a new credential");
+      assert.match(await text(f), /Current site/);
+      assert.match(await text(f), new RegExp(BASE.replace(/\./g, "\\.") + "/" + TOKEN22 + "/"));
+      await expectPhoneFit(t.panel, "stale confirmed update completed");
+      const rest = t.panel.errors.filter((e) => !/status of 409/.test(e));
+      assert.deepEqual(rest, []);
+      await t.panel.close();
+    }
+  },
+
   "network error shows a message and Try again works": async () => {
     const t = await setup({
       put: (n) => n === 1 ? { abort: true } : { status: 201, json: releaseView() },

@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -455,12 +456,16 @@ func (a *apiServer) mcpCall(ctx context.Context, name string, raw json.RawMessag
 		if mcpDecode(raw, &args) != nil {
 			return mcpFailure("invalid begin_upload arguments")
 		}
+		b, _ := json.Marshal(args)
 		if args.Token != "" {
-			if r := a.mcpConfirm(ctx, parent, confirmTarget{Tool: name, Token: args.Token, IdempotencyKey: args.IdempotencyKey, SHA256: args.SHA256, Size: args.Size}); r != nil {
+			var r *mcp.CallToolResult
+			ctx, r = a.mcpConfirm(ctx, confirmTarget{Tool: name, Token: args.Token}, func() [sha256.Size]byte {
+				return sha256.Sum256(b)
+			})
+			if r != nil {
 				return r
 			}
 		}
-		b, _ := json.Marshal(args)
 		return mcpAPIResult(a.mcpDispatch(ctx, parent, "POST", "/_api/v1/uploads", bytes.NewReader(b), "application/json", "", mcpOutputBytes))
 	}
 	if name == "upload_from_computer" {
@@ -517,7 +522,9 @@ func (a *apiServer) mcpCall(ctx context.Context, name string, raw json.RawMessag
 		target += "/" + args.Token
 	}
 	if name == "delete_release" || name == "remove_password" {
-		if r := a.mcpConfirm(ctx, parent, confirmTarget{Tool: name, Token: args.Token}); r != nil {
+		var r *mcp.CallToolResult
+		ctx, r = a.mcpConfirm(ctx, confirmTarget{Tool: name, Token: args.Token}, nil)
+		if r != nil {
 			return r
 		}
 	}
@@ -632,7 +639,11 @@ func (a *apiServer) mcpPublish(ctx context.Context, parent *http.Request, name s
 		return mcpFailure("invalid metadata or viewer password")
 	}
 	if args.Token != "" {
-		if r := a.mcpConfirm(ctx, parent, confirmTarget{Tool: name, Token: args.Token, IdempotencyKey: args.IdempotencyKey}); r != nil {
+		var r *mcp.CallToolResult
+		ctx, r = a.mcpConfirm(ctx, confirmTarget{Tool: name, Token: args.Token}, func() [sha256.Size]byte {
+			return confirmPublishDigest(args)
+		})
+		if r != nil {
 			return r
 		}
 	}

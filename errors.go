@@ -114,6 +114,10 @@ var errorHints = map[string]string{
 		"Do not retry on your own: ask the user what they want, and call the tool again only if they ask for it.",
 	"could not prepare the confirmation": "The server could not read the release to ask the user for confirmation. Nothing was changed; " +
 		"retrying is safe. Call release_info to check the release, and quote request_id if it keeps failing.",
+	"release changed since confirmation": "The content or release settings changed before the approved action ran. " +
+		"Check release_info and ask the user to confirm the current release. For a ticket upload, call begin_upload again with the same arguments.",
+	"could not prepare confirmed publish": "The server stopped before publishing the approved update. " +
+		"Retry with the same idempotency key and content, and quote request_id if it keeps failing.",
 	"release not found": "No active release of your account has this token (it may have been deleted or have expired). Call list_releases for current tokens; " +
 		"a deleted release cannot be restored, so publish it again, without token, if you still need it. Nothing was changed.",
 	"invalid release token": "token must be the 22-character token of an existing release, as list_releases shows it. " +
