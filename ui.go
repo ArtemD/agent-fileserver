@@ -22,6 +22,10 @@ import (
 var uiFiles embed.FS
 
 const (
+	// uiExtensionID is advertised in the server capabilities: from MCP
+	// 2026-07-28 a client treats an extension the server does not list in
+	// server/discover as unsupported.
+	uiExtensionID  = "io.modelcontextprotocol/ui"
 	uiMIMEType     = "text/html;profile=mcp-app"
 	uiReleaseURI   = "ui://agent-fileserver/release.html"
 	uiReleasesURI  = "ui://agent-fileserver/releases.html"

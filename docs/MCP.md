@@ -7,6 +7,12 @@ the shared, in-process publisher; the release core is never routed publicly.
 
 - URL: `https://YOUR_HOST/mcp`
 - Transport: **Streamable HTTP**, JSON responses, stateless.
+- Protocol versions: **2026-07-28** (sessionless: no `initialize`, each request
+  carries its version and client capabilities in `_meta`, and the server
+  describes itself in `server/discover`) and the earlier revisions back to
+  2024-11-05 through `initialize`. No version creates a protocol session
+  (`Mcp-Session-Id`). Capabilities: `tools`, `resources` and the MCP Apps
+  extension `io.modelcontextprotocol/ui`.
 - Key header (one of):
   - `Authorization: Bearer YOUR_AGENT_KEY`
   - `X-Auth-Token: YOUR_AGENT_KEY` — for hosts that reserve `Authorization` for
@@ -296,7 +302,9 @@ which is the reported `url`, with no archive needed. The archive mode needs no
 
 ## Panels (MCP Apps)
 
-Clients that implement the official MCP Apps extension (protocol `2026-01-26`),
+Clients that implement the official MCP Apps extension
+(`io.modelcontextprotocol/ui`, protocol `2026-01-26`; the server advertises it in
+`server/discover` and `initialize`),
 such as Claude on the web and desktop (the mobile app shows them too), render an
 interactive panel in the chat for some tools. Other clients ignore the panels
 and get the same text results as before; no tool depends on a panel.

@@ -7,12 +7,14 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -113,6 +115,124 @@ func TestMCPInitializeDiscoveryAndAnnotations(t *testing.T) {
 	}
 	if err := json.Unmarshal(raw, &info); err != nil || info.Version == "" || info.Version != buildVersion {
 		t.Fatalf("server_info version %q, want %q (err %v): %s", info.Version, buildVersion, err, raw)
+	}
+}
+
+// mcpPost20260728 sends one sessionless MCP 2026-07-28 request: no initialize,
+// the version and client capabilities in params._meta, and the Mcp-Method and
+// Mcp-Name headers that such clients send.
+func mcpPost20260728(t *testing.T, f apiFixture, method, name string, params map[string]any, withMeta bool) *httptest.ResponseRecorder {
+	t.Helper()
+	if params == nil {
+		params = map[string]any{}
+	}
+	if withMeta {
+		params["_meta"] = map[string]any{
+			"io.modelcontextprotocol/protocolVersion":    "2026-07-28",
+			"io.modelcontextprotocol/clientCapabilities": map[string]any{"extensions": map[string]any{uiExtensionID: map[string]any{"mimeTypes": []string{uiMIMEType}}}},
+			"io.modelcontextprotocol/clientInfo":         map[string]string{"name": "integration", "version": "1"}}
+	}
+	b, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest("POST", "/mcp", bytes.NewReader(b))
+	r.Header.Set("Authorization", "Bearer "+f.key)
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Accept", "application/json, text/event-stream")
+	r.Header.Set("MCP-Protocol-Version", "2026-07-28")
+	r.Header.Set("Mcp-Method", method)
+	if name != "" {
+		r.Header.Set("Mcp-Name", name)
+	}
+	w := httptest.NewRecorder()
+	f.a.ServeHTTP(w, r)
+	return w
+}
+
+func TestMCPSessionless20260728(t *testing.T) {
+	f := testAPI(t)
+	var discover struct {
+		Result struct {
+			ResultType        string   `json:"resultType"`
+			SupportedVersions []string `json:"supportedVersions"`
+			Capabilities      struct {
+				Tools      map[string]any            `json:"tools"`
+				Resources  map[string]any            `json:"resources"`
+				Extensions map[string]map[string]any `json:"extensions"`
+			} `json:"capabilities"`
+		} `json:"result"`
+	}
+	w := mcpPost20260728(t, f, "server/discover", "", nil, true)
+	if err := json.Unmarshal(w.Body.Bytes(), &discover); err != nil || w.Code != 200 || discover.Result.ResultType != "complete" ||
+		!slices.Contains(discover.Result.SupportedVersions, "2026-07-28") || !slices.Contains(discover.Result.SupportedVersions, "2025-06-18") ||
+		discover.Result.Capabilities.Tools == nil || discover.Result.Capabilities.Resources == nil ||
+		discover.Result.Capabilities.Extensions[uiExtensionID] == nil || w.Header().Get("Mcp-Session-Id") != "" {
+		t.Fatalf("discover: %d %s (%v)", w.Code, w.Body, err)
+	}
+	// Older clients negotiate the same extension through initialize.
+	w = mcpPost(t, f, "initialize", map[string]any{"protocolVersion": "2025-06-18", "capabilities": map[string]any{}, "clientInfo": map[string]string{"name": "integration", "version": "1"}})
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"extensions":{"`+uiExtensionID+`":{}}`) {
+		t.Fatalf("initialize extensions: %d %s", w.Code, w.Body)
+	}
+
+	var list struct {
+		Result struct {
+			ResultType string `json:"resultType"`
+			Tools      []struct {
+				Name string         `json:"name"`
+				Meta map[string]any `json:"_meta"`
+			} `json:"tools"`
+		} `json:"result"`
+	}
+	w = mcpPost20260728(t, f, "tools/list", "", nil, true)
+	if err := json.Unmarshal(w.Body.Bytes(), &list); err != nil || w.Code != 200 || list.Result.ResultType != "complete" || len(list.Result.Tools) != 13 {
+		t.Fatalf("tools/list: %d %s (%v)", w.Code, w.Body, err)
+	}
+	linked := 0
+	for _, tool := range list.Result.Tools {
+		if ui, ok := tool.Meta["ui"].(map[string]any); ok && strings.HasPrefix(fmt.Sprint(ui["resourceUri"]), "ui://agent-fileserver/") {
+			linked++
+		}
+	}
+	if linked == 0 {
+		t.Fatalf("no tool links a panel under 2026-07-28: %s", w.Body)
+	}
+
+	var call struct {
+		Error  json.RawMessage `json:"error"`
+		Result struct {
+			ResultType string `json:"resultType"`
+			IsError    bool   `json:"isError"`
+			Content    []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+			Meta map[string]map[string]any `json:"_meta"`
+		} `json:"result"`
+	}
+	w = mcpPost20260728(t, f, "tools/call", "server_info", map[string]any{"name": "server_info", "arguments": map[string]any{}}, true)
+	if err := json.Unmarshal(w.Body.Bytes(), &call); err != nil || w.Code != 200 || len(call.Error) > 0 || call.Result.ResultType != "complete" || call.Result.IsError ||
+		len(call.Result.Content) != 1 || !strings.Contains(call.Result.Content[0].Text, `"namespace":"default"`) || strings.Contains(w.Body.String(), f.key) ||
+		call.Result.Meta["io.modelcontextprotocol/serverInfo"]["name"] != "agent-fileserver" || w.Header().Get("Mcp-Session-Id") != "" {
+		t.Fatalf("sessionless tools/call: %d %s (%v)", w.Code, w.Body, err)
+	}
+
+	// A 2026-07-28 request must carry its version in _meta, and the removed
+	// handshake is refused rather than half-supported. Neither runs a tool.
+	for _, c := range []struct{ method, name string }{{"tools/call", "server_info"}, {"initialize", ""}} {
+		params := map[string]any{"name": "server_info", "arguments": map[string]any{}}
+		if c.method == "initialize" {
+			params = map[string]any{"protocolVersion": "2026-07-28", "capabilities": map[string]any{}, "clientInfo": map[string]string{"name": "integration", "version": "1"}}
+		}
+		w = mcpPost20260728(t, f, c.method, c.name, params, false)
+		if w.Code != 400 || !strings.Contains(w.Body.String(), `"error"`) || strings.Contains(w.Body.String(), `"result"`) {
+			t.Fatalf("%s without _meta version: %d %s", c.method, w.Code, w.Body)
+		}
+	}
+	// Unauthenticated sessionless calls are refused like any other.
+	f.key = "invalid"
+	if w = mcpPost20260728(t, f, "tools/call", "server_info", map[string]any{"name": "server_info", "arguments": map[string]any{}}, true); w.Code != 401 {
+		t.Fatalf("sessionless call without a valid key: %d %s", w.Code, w.Body)
 	}
 }
 

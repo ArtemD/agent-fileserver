@@ -200,7 +200,8 @@ func (a *apiServer) newMCPHandler() (http.Handler, error) {
 	// protocol errors. Only the existing structured, body-free API audit is used.
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	server := mcp.NewServer(&mcp.Implementation{Name: "agent-fileserver", Version: buildVersion}, &mcp.ServerOptions{Logger: logger,
-		Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}, Resources: &mcp.ResourceCapabilities{}},
+		Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}, Resources: &mcp.ResourceCapabilities{},
+			Extensions: map[string]any{uiExtensionID: map[string]any{}}},
 		Instructions: "Publish clean static files only. Never pass management bearer keys as tool arguments. Publish retries require the same explicit idempotency_key and bytes. Downloads are inline only, up to 1 MiB; this is not a client file-attachment guarantee. For files too large to pass inline (attachments, big sites, videos), call begin_upload and PUT the raw bytes with the returned curl command. " +
 			"Releases expire and are deleted automatically after default_expiry_days (server_info) unless expires_in_days says otherwise; every result shows expires_at and publish results carry a notice. When the user needs a link to last, pass expires_in_days (0 = never) or call set_expiry, and tell the user when a link will stop working. " +
 			"To change a published site without changing its link, publish again with token set to the existing release."})

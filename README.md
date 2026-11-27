@@ -99,7 +99,8 @@ prompts, URLs or tool arguments.
 
 ## 3. Connect and authenticate
 
-Endpoint: `https://YOUR_HOST/mcp` (Streamable HTTP, stateless). Every request
+Endpoint: `https://YOUR_HOST/mcp` (Streamable HTTP, stateless; MCP 2026-07-28
+and earlier revisions, see [docs/MCP.md](docs/MCP.md)). Every request
 must carry the key in **one** of these headers:
 
 | Header | Use when |

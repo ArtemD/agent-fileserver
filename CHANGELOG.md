@@ -10,6 +10,16 @@ Each release on GitHub also lists every commit and the issues it closed.
 
 ## [Unreleased]
 
+### Fixed
+
+- `server/discover` and `initialize` now advertise the MCP Apps extension
+  (`io.modelcontextprotocol/ui`). From MCP 2026-07-28 a client treats an
+  extension the server does not list as unsupported, so clients that follow that
+  rule may not have shown the release, releases and upload panels. The
+  sessionless 2026-07-28 protocol is now tested in Go and live through Caddy.
+  No client changes are required
+  ([#47](https://github.com/ArtemD/agent-fileserver/issues/47)).
+
 ### Security
 
 - The Go service image is built with Go 1.27.4, which fixes an HTTP/1 server

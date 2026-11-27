@@ -40,7 +40,11 @@ Go tests cover safe publication, policies/credentials, replay/recovery,
 tar/ZIP layout (flat, one wrapper, `./` prefix) and traversal/type/CRC/limits,
 that archive errors name the entry and reason, that every error has a `hint`,
 admission/privacy, stale-socket recovery and
-MCP. MCP tests use the official SDK handler: initialization, discovery, shared
+MCP. MCP tests use the official SDK handler: initialization, discovery, the
+sessionless 2026-07-28 protocol (`server/discover` with its supported versions
+and the MCP Apps extension, `tools/list` and `tools/call` without `initialize`
+or a session, `resultType`, and refusal of a 2026-07-28 request without its
+`_meta` version or with the removed handshake), shared
 CRUD/passwords/download, ZIP/tar, revocation, both key headers, that the release
 core is unreachable as a public route, origin/body/concurrency gates,
 duplicate/case-aliased arguments, whole-envelope structural allocation bombs and
@@ -164,6 +168,12 @@ list, read, change or delete them. Shared helper: `tests/mcp_fixture.py`.
   `OPTIONS` answered without a ticket, and a cross-origin `PUT` with a ticket
   (`Origin` set to a foreign value) that publishes and returns
   `Access-Control-Allow-Origin: *`, while `/mcp` still sends no CORS headers.
+- `mcp_live.py` also speaks MCP 2026-07-28 through Caddy, as new clients do:
+  no `initialize`, the version and client capabilities in `_meta`, and the
+  `Mcp-Method`/`Mcp-Name` headers. `server/discover` must offer 2026-07-28
+  next to 2025-06-18 and advertise `io.modelcontextprotocol/ui`; `tools/list`
+  keeps its panel links, `tools/call` works without a session, and a request
+  without its `_meta` version or with the removed handshake is refused.
 
 Knobs: `FSERVER_TEST_BASE` (default `http://localhost:8000`) and
 `FSERVER_TEST_RESOLVE=HOST:443:PUBLIC_IP`, which makes curl use the real public

@@ -1285,6 +1285,62 @@ class MCPLive(unittest.TestCase):
         self.tool("delete_release", {"token": token})
         self.releases.discard(token)
 
+    def rpc_20260728(self, method, params, *, name=None, with_meta=True):
+        """One sessionless MCP 2026-07-28 request through Caddy: no initialize,
+        version and capabilities in _meta, Mcp-Method/Mcp-Name headers."""
+        params = dict(params)
+        if with_meta:
+            params["_meta"] = {
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientCapabilities": {"extensions": {
+                    "io.modelcontextprotocol/ui": {"mimeTypes": ["text/html;profile=mcp-app"]}}},
+                "io.modelcontextprotocol/clientInfo": {"name": "mcp-live", "version": "1"}}
+        message = json.dumps({"jsonrpc": "2.0", "id": secrets.randbelow(1 << 30) + 1,
+                              "method": method, "params": params}).encode()
+        headers = {"Content-Type": "application/json",
+                   "Accept": "application/json, text/event-stream",
+                   "MCP-Protocol-Version": "2026-07-28", "Mcp-Method": method}
+        if name:
+            headers["Mcp-Name"] = name
+        status, response_headers, body = self.request("/mcp", "POST", body=message, headers=headers)
+        check("mcp-session-id" not in response_headers, "2026-07-28 request created a session")
+        check("access-control-allow-origin" not in response_headers, "unexpected MCP CORS")
+        try:
+            return status, json.loads(body)
+        except ValueError:
+            raise LiveFailure("2026-07-28 MCP returned invalid JSON") from None
+
+    def test_38_sessionless_2026_07_28_protocol(self):
+        status, discover = self.rpc_20260728("server/discover", {})
+        result = discover.get("result") or {}
+        check(status == 200 and result.get("resultType") == "complete"
+              and "2026-07-28" in result.get("supportedVersions", [])
+              and "2025-06-18" in result.get("supportedVersions", []),
+              "server/discover does not offer 2026-07-28 next to older versions")
+        check("io.modelcontextprotocol/ui" in result.get("capabilities", {}).get("extensions", {}),
+              "server/discover does not advertise the MCP Apps extension")
+        status, listed = self.rpc_20260728("tools/list", {})
+        tools = (listed.get("result") or {}).get("tools", [])
+        check(status == 200 and len(tools) == 13
+              and any(str(t.get("_meta", {}).get("ui", {}).get("resourceUri", "")).startswith(
+                  "ui://agent-fileserver/") for t in tools),
+              "sessionless tools/list lost tools or panel links")
+        status, called = self.rpc_20260728(
+            "tools/call", {"name": "server_info", "arguments": {}}, name="server_info")
+        result = called.get("result") or {}
+        content = result.get("content") or [{}]
+        check(status == 200 and result.get("resultType") == "complete" and not result.get("isError")
+              and json.loads(content[0].get("text", "{}")).get("account") == self.tag
+              and self.key not in json.dumps(called),
+              "sessionless tools/call without initialize failed")
+        for method, params in (("tools/call", {"name": "server_info", "arguments": {}}),
+                               ("initialize", {"protocolVersion": "2026-07-28", "capabilities": {},
+                                               "clientInfo": {"name": "mcp-live", "version": "1"}})):
+            status, refused = self.rpc_20260728(method, params, name="server_info"
+                                                if method == "tools/call" else None, with_meta=False)
+            check(status == 400 and "error" in refused and "result" not in refused,
+                  "2026-07-28 request without its _meta version was not refused: " + method)
+
     @unittest.skipUnless(os.environ.get("FSERVER_TEST_LARGE") == "1",
                          "set FSERVER_TEST_LARGE=1 for the 256 MiB upload")
     def test_17_optional_large_single_file_upload(self):

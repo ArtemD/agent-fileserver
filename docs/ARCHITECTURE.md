@@ -29,7 +29,9 @@ MCP is the only management interface and not a second filesystem writer: its
 tools call the shared release core in-process. That core answers no public HTTP
 route; Caddy routes only `/mcp` and the ticket-only `PUT /_upload` (below), and
 the service refuses anything else that did not come from the MCP adapter. It uses the
-official MCP Go SDK and Streamable HTTP. Stateless request authentication keeps
+official MCP Go SDK and Streamable HTTP. It serves the sessionless MCP 2026-07-28
+revision as well as `initialize`-based ones, and never creates a protocol
+session, so no state links one call to the next. Stateless request authentication keeps
 revocation effective on subsequent calls. Management credentials are headers,
 never tool arguments, query parameters, browser cookies or visitor passwords.
 No OAuth account database is needed for this Bearer-key model: accounts are a
@@ -195,7 +197,8 @@ refuses foreign origins. This is a deliberate change to the model:
 
 ## MCP Apps panels
 
-For hosts that support the MCP Apps extension (protocol `2026-01-26`) the server
+For hosts that support the MCP Apps extension (`io.modelcontextprotocol/ui`,
+protocol `2026-01-26`, advertised in the server capabilities) the server
 exposes three `ui://agent-fileserver/…` resources (release card, releases
 dashboard, upload panel) and links tools to them with `_meta.ui.resourceUri`.
 This adds no route and no management surface: a panel is data returned over
