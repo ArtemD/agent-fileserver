@@ -63,6 +63,7 @@ themselves. Details: docs/TESTING.md.
 | `mcp.go` | MCP tools; the only management surface |
 | `api.go` | Auth, rate limits, in-process release core, Caddy `forward_auth` endpoint (also refuses expired releases), expiry sweeper |
 | `publish.go`, `archive*.go`, `security.go` | Publisher (new release and in-place update), archive extraction, keys, policies |
+| `confirm.go` | Human confirmation of deletes, password removal and updates in place (MCP 2026-07-28 elicitation, signed `requestState`) |
 | `errors.go` | Error responses: stable error strings plus a next-step `hint` for every one |
 | `ui.go` | MCP Apps: embeds `ui/`, links tools to panels with `_meta.ui`, registers the `ui://agent-fileserver/*` resources |
 | `ui/` | Panel sources: `release.html`, `releases.html`, `upload.html`, shared `bridge.js` (MCP Apps client) and `base.css`; inlined at start |

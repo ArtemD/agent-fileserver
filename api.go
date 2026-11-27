@@ -69,6 +69,7 @@ type apiServer struct {
 	bcryptJobs        chan struct{}
 	viewerCache       map[[32]byte]time.Time
 	cacheSecret       [32]byte
+	confirmSecret     [32]byte // signs confirmation requestState (confirm.go)
 	mcpHandler        http.Handler
 	mcpAdmission      chan struct{}
 	mcpSmallAdmission chan struct{}
@@ -128,6 +129,9 @@ func newAPIServer(s *store, tokens *tokenStore, cfg apiConfig) (*apiServer, erro
 	a.uploadSlot = make(chan struct{}, 1)
 	a.viewerCache = make(map[[32]byte]time.Time)
 	if _, err := rand.Read(a.cacheSecret[:]); err != nil {
+		return nil, err
+	}
+	if _, err := rand.Read(a.confirmSecret[:]); err != nil {
 		return nil, err
 	}
 	for _, p := range []string{a.incoming, a.state} {

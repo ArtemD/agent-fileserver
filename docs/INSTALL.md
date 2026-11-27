@@ -222,6 +222,18 @@ rewritten. Links already handed out on the old domain keep working only while
 that hostname still reaches this server, so keep it pointed here (or redirect
 it) until those links have aged out.
 
+**Upgrading to the release with confirmations (0.7.0):** nothing changes on the
+server; rebuild and restart as usual, no data or key changes. For clients:
+
+1. Clients that declare form elicitation on MCP 2026-07-28 requests (Claude)
+   now ask the user before `delete_release`, `remove_password` and an update in
+   place (`token` set). Unattended automation should use a client that does
+   not declare elicitation; it keeps the earlier behaviour.
+2. Check it worked: in Claude, ask it to delete a test release. A form names
+   the release and its link; *decline* leaves it in `list_releases`.
+3. Roll back by checking out the previous release tag and rebuilding; nothing
+   is stored, so there is nothing to undo.
+
 **Upgrading to the release with immutable content versions (0.6.0):**
 updates use a new on-disk layout while release links stay the same. Existing
 releases remain readable without migration. Upgrade both containers together:

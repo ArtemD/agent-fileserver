@@ -10,6 +10,15 @@ Each release on GitHub also lists every commit and the issues it closed.
 
 ## [Unreleased]
 
+### Added
+
+- Deleting a release, removing its password and updating it in place now ask
+  the user to confirm first, through MCP 2026-07-28 elicitation, so a model
+  talked into it by content it read cannot do it alone. Clients: Claude shows a
+  form; clients without elicitation, and earlier protocol versions, behave as
+  before; see the [upgrade note](docs/INSTALL.md#upgrades)
+  ([#49](https://github.com/ArtemD/agent-fileserver/issues/49)).
+
 ## [0.6.1] - 2026-11-27
 
 ### Fixed

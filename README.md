@@ -273,6 +273,9 @@ published before this feature never expire. Details:
   and corrupt archives are rejected. This is not content-based secret scanning.
 - All releases on one hostname share a browser origin: only publish JavaScript
   you trust, and never reuse company production login cookies here.
+- Deleting a release, removing its password or replacing its content asks you
+  to confirm in Claude (and any client with MCP 2026-07-28 elicitation), so a
+  model cannot do it on its own. Other clients behave as before.
 - Deletion, including automatic deletion at expiry, is permanent at the origin;
   it can't recall downloads or caches.
 - Upload tickets are 256-bit, single-use, expire after 30 minutes, work only on

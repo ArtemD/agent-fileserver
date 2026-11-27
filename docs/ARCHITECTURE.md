@@ -224,6 +224,26 @@ This adds no route and no management surface: a panel is data returned over
 - Delete in the dashboard needs two clicks, and the host (Claude) asks before it
   shows an app the first time and before it opens a link.
 
+## Human confirmation
+
+`delete_release`, `remove_password` and updates in place cannot be undone or
+make a release public, and a model can be talked into calling them by content
+it reads. For a client that declares form elicitation on an MCP 2026-07-28
+request, the server asks the user through the client (`input_required` with an
+`elicitation/create` form) and runs the action only on an explicit acceptance.
+A tool argument could not do this, because the model writes the arguments.
+
+The server keeps no pending state. `requestState` is an expiry and an
+HMAC-SHA256, under a random key made at start, over the caller's account and
+key ID, the tool and the arguments that identify the action, valid 10 minutes.
+A tampered, expired or foreign state is not an error; the user is asked again.
+The release is looked up with the caller's account before any prompt, so
+account separation and `release not found` are unchanged, and the prompt holds
+only the release's own label (control and format characters removed, at most
+80 characters) and URL. A client that omits the capability, or answers the
+form itself, is limited exactly as before by its key: this is consent for
+honest clients, not an authentication layer.
+
 ## Credentials and privacy
 
 Named API keys have 256 random bits, independent revocation and optional expiry;

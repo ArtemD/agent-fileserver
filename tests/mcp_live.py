@@ -1285,15 +1285,19 @@ class MCPLive(unittest.TestCase):
         self.tool("delete_release", {"token": token})
         self.releases.discard(token)
 
-    def rpc_20260728(self, method, params, *, name=None, with_meta=True):
+    def rpc_20260728(self, method, params, *, name=None, with_meta=True, elicit=False):
         """One sessionless MCP 2026-07-28 request through Caddy: no initialize,
-        version and capabilities in _meta, Mcp-Method/Mcp-Name headers."""
+        version and capabilities in _meta, Mcp-Method/Mcp-Name headers. With
+        elicit the client declares that it can show the user a form."""
         params = dict(params)
         if with_meta:
+            capabilities = {"extensions": {
+                "io.modelcontextprotocol/ui": {"mimeTypes": ["text/html;profile=mcp-app"]}}}
+            if elicit:
+                capabilities["elicitation"] = {"form": {}}
             params["_meta"] = {
                 "io.modelcontextprotocol/protocolVersion": "2026-07-28",
-                "io.modelcontextprotocol/clientCapabilities": {"extensions": {
-                    "io.modelcontextprotocol/ui": {"mimeTypes": ["text/html;profile=mcp-app"]}}},
+                "io.modelcontextprotocol/clientCapabilities": capabilities,
                 "io.modelcontextprotocol/clientInfo": {"name": "mcp-live", "version": "1"}}
         message = json.dumps({"jsonrpc": "2.0", "id": secrets.randbelow(1 << 30) + 1,
                               "method": method, "params": params}).encode()
@@ -1340,6 +1344,47 @@ class MCPLive(unittest.TestCase):
                                                 if method == "tools/call" else None, with_meta=False)
             check(status == 400 and "error" in refused and "result" not in refused,
                   "2026-07-28 request without its _meta version was not refused: " + method)
+
+    def confirm_call(self, tool, arguments, answer=None, state=None):
+        params = {"name": tool, "arguments": arguments}
+        if answer is not None:
+            params["inputResponses"] = {"confirm": answer}
+        if state is not None:
+            params["requestState"] = state
+        status, reply = self.rpc_20260728("tools/call", params, name=tool, elicit=True)
+        check(status == 200 and isinstance(reply.get("result"), dict), "confirmation call failed: " + tool)
+        return reply["result"]
+
+    def test_39_user_confirms_delete_remove_password_and_update(self):
+        view = self.publish(args=self.site_args(expires_in_days=1, password=secrets.token_urlsafe(18)))
+        token = view["token"]
+        for tool in ("delete_release", "remove_password"):
+            asked = self.confirm_call(tool, {"token": token})
+            request = json.dumps(asked.get("inputRequests", {}).get("confirm"))
+            check(asked.get("resultType") == "input_required" and asked.get("requestState")
+                  and "elicitation/create" in request and view["url"] in request,
+                  "no confirmation request through Caddy: " + tool)
+            declined = self.confirm_call(tool, {"token": token}, {"action": "decline"}, asked["requestState"])
+            error = json.loads((declined.get("content") or [{}])[0].get("text", "{}"))
+            check(declined.get("isError") is True and error.get("error") == "cancelled: the user did not confirm"
+                  and error.get("hint"), "declined confirmation did not refuse: " + tool)
+            check(self.tool("release_info", {"token": token}).get("protected") is True,
+                  "declined " + tool + " changed the release")
+        update = self.site_args(token=token)
+        asked = self.confirm_call("publish_files", update)
+        check(asked.get("resultType") == "input_required", "update in place was not confirmed")
+        status, _, _ = self.request("/" + token + "/index.html", anonymous=True)
+        check(status == 401, "update or password change happened before confirmation")
+        done = self.confirm_call("publish_files", update,
+                                 {"action": "accept", "content": {"confirm": True}}, asked["requestState"])
+        check(done.get("resultType") == "complete" and not done.get("isError"), "confirmed update failed")
+        asked = self.confirm_call("delete_release", {"token": token})
+        done = self.confirm_call("delete_release", {"token": token},
+                                 {"action": "accept", "content": {"confirm": True}}, asked["requestState"])
+        check(done.get("resultType") == "complete" and not done.get("isError")
+              and self.request("/" + token + "/index.html", anonymous=True)[0] == 404,
+              "confirmed delete did not remove the release")
+        self.releases.discard(token)
 
     @unittest.skipUnless(os.environ.get("FSERVER_TEST_LARGE") == "1",
                          "set FSERVER_TEST_LARGE=1 for the 256 MiB upload")

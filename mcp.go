@@ -221,13 +221,14 @@ func (a *apiServer) newMCPHandler() (http.Handler, error) {
 	if a.cfg.DefaultExpiryDays > 0 {
 		lifecycle = fmt.Sprintf(" New releases are DELETED AUTOMATICALLY after %d days unless expires_in_days says otherwise (0 = never).", a.cfg.DefaultExpiryDays)
 	}
-	lifecycle += " The result shows expires_at and a notice. Pass token to update an existing release in place, keeping its URL."
+	lifecycle += " The result shows expires_at and a notice. Pass token to update an existing release in place, keeping its URL." +
+		" With token, clients that support it ask the user to confirm the replacement first."
 	add := func(name, description string, schema any, readOnly, destructive, idempotent bool) {
 		openWorld := name == "publish_files" || name == "publish_archive" || name == "remove_password" || name == "begin_upload"
 		server.AddTool(&mcp.Tool{Name: name, Description: description, InputSchema: schema, Meta: uiToolMeta(name),
 			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: readOnly, DestructiveHint: &destructive, IdempotentHint: idempotent, OpenWorldHint: &openWorld}},
 			func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-				return a.mcpCall(ctx, name, req.Params.Arguments), nil
+				return a.mcpCall(context.WithValue(ctx, mcpCallKey{}, req), name, req.Params.Arguments), nil
 			})
 	}
 	add("server_info", "Management identity, namespace, limits, default_expiry_days and current free disk space (disk: what fits right now).", mcpSchema(map[string]any{}), true, false, true)
@@ -237,9 +238,9 @@ func (a *apiServer) newMCPHandler() (http.Handler, error) {
 		description := map[string]string{
 			"release_info":     "Read release metadata and visitor access policy.",
 			"download_release": "Download at most 1 MiB inline as base64; larger releases are refused with an error.",
-			"delete_release":   "Permanently delete a release.",
+			"delete_release":   "Permanently delete a release." + confirmNote,
 			"reset_password":   "Replace visitor password with a random password returned once. Treat the returned password as secret.",
-			"remove_password":  "Remove visitor password protection, making the release PUBLIC ON THE INTERNET."}[name]
+			"remove_password":  "Remove visitor password protection, making the release PUBLIC ON THE INTERNET." + confirmNote}[name]
 		add(name, description, mcpSchema(map[string]any{"token": token()}, "token"), name == "release_info" || name == "download_release", name == "delete_release" || name == "reset_password" || name == "remove_password", name != "reset_password")
 	}
 	add("set_password", "Replace the visitor password. Password is not a management bearer key.", mcpSchema(map[string]any{"token": token(), "password": str()}, "token", "password"), false, true, true)
@@ -454,6 +455,11 @@ func (a *apiServer) mcpCall(ctx context.Context, name string, raw json.RawMessag
 		if mcpDecode(raw, &args) != nil {
 			return mcpFailure("invalid begin_upload arguments")
 		}
+		if args.Token != "" {
+			if r := a.mcpConfirm(ctx, parent, confirmTarget{Tool: name, Token: args.Token, IdempotencyKey: args.IdempotencyKey, SHA256: args.SHA256, Size: args.Size}); r != nil {
+				return r
+			}
+		}
 		b, _ := json.Marshal(args)
 		return mcpAPIResult(a.mcpDispatch(ctx, parent, "POST", "/_api/v1/uploads", bytes.NewReader(b), "application/json", "", mcpOutputBytes))
 	}
@@ -509,6 +515,11 @@ func (a *apiServer) mcpCall(ctx context.Context, name string, raw json.RawMessag
 			return mcpFailure("invalid tool arguments")
 		}
 		target += "/" + args.Token
+	}
+	if name == "delete_release" || name == "remove_password" {
+		if r := a.mcpConfirm(ctx, parent, confirmTarget{Tool: name, Token: args.Token}); r != nil {
+			return r
+		}
 	}
 	var body io.Reader
 	switch name {
@@ -619,6 +630,11 @@ func (a *apiServer) mcpPublish(ctx context.Context, parent *http.Request, name s
 	}
 	if len(args.Label) > 8192 || len(args.Password) > 72 {
 		return mcpFailure("invalid metadata or viewer password")
+	}
+	if args.Token != "" {
+		if r := a.mcpConfirm(ctx, parent, confirmTarget{Tool: name, Token: args.Token, IdempotencyKey: args.IdempotencyKey}); r != nil {
+			return r
+		}
 	}
 	var artifact io.Reader
 	if name == "publish_archive" {

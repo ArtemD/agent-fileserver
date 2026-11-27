@@ -50,6 +50,19 @@ core is unreachable as a public route, origin/body/concurrency gates,
 duplicate/case-aliased arguments, whole-envelope structural allocation bombs and
 secret-free audits. Fuzz seed/parser tests run in the default suite.
 
+`confirm_test.go` covers human confirmation over 2026-07-28 elicitation:
+`delete_release`, `remove_password`, `publish_files` with `token` and
+`begin_upload` with `token` return `input_required` with a form naming the
+release, and change nothing until an acceptance with `confirm: true` and a
+valid `requestState`; `decline`, `cancel` and an unticked box refuse with a
+hint; an empty, malformed, tampered, other release's, other tool's, other
+key's or other update's state asks again; the state expires and does not
+survive a new server key; labels are cleaned for the prompt; new releases and
+`reset_password` are not asked; clients without the capability and 2025-06-18
+clients behave as before; unknown and other accounts' tokens get `release not
+found` without a prompt; and the official Go SDK client with an elicitation
+handler completes (accept) or refuses (decline) the flow end to end.
+
 `ui_test.go` covers the MCP Apps side: the three `ui://agent-fileserver/*`
 resources (MIME type `text/html;profile=mcp-app`, `_meta.ui` with
 `prefersBorder`, `clipboardWrite` and the upload panel's `csp.connectDomains`),
@@ -174,6 +187,9 @@ list, read, change or delete them. Shared helper: `tests/mcp_fixture.py`.
   next to 2025-06-18 and advertise `io.modelcontextprotocol/ui`; `tools/list`
   keeps its panel links, `tools/call` works without a session, and a request
   without its `_meta` version or with the removed handshake is refused.
+  Through the same edge it walks a confirmation: `delete_release` and
+  `remove_password` ask and a decline changes nothing, an update in place
+  waits for acceptance, and an accepted delete removes the release.
 
 Knobs: `FSERVER_TEST_BASE` (default `http://localhost:8000`) and
 `FSERVER_TEST_RESOLVE=HOST:443:PUBLIC_IP`, which makes curl use the real public
