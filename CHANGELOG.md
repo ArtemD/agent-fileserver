@@ -10,6 +10,13 @@ Each release on GitHub also lists every commit and the issues it closed.
 
 ## [Unreleased]
 
+### Security
+
+- The Go service image is built with Go 1.27.4, which fixes an HTTP/1 server
+  crash in `net/http` (GO-2026-6859) that a crafted request could trigger. The
+  normal rebuild during an upgrade picks it up; nothing else changes
+  ([#46](https://github.com/ArtemD/agent-fileserver/issues/46)).
+
 ## [0.6.0] - 2026-11-06
 
 ### Security
