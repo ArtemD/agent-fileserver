@@ -105,8 +105,11 @@ const (
 )
 
 // errorHints maps each stable error string to its next step. A Go test
-// (TestEveryErrorHasHint) fails if an apiError or mcpFailure literal lacks one.
+// (TestEveryErrorHasHint) checks handler, tool and skill error literals.
 var errorHints = map[string]string{
+	// Publishing skill discovery.
+	"skill not found":       "Call skills/list for the current skill URI, or use the existing publishing tools.",
+	"invalid skills cursor": "Call skills/list without a cursor to start again. Use a cursor only when the server sends one.",
 	// Routing and authentication.
 	"not found": "The path, release or file does not exist. Check the URL or token; agents can call list_releases " +
 		"for current tokens. A deleted release cannot be restored.",

@@ -111,6 +111,10 @@ must carry the key in **one** of these headers:
 If an `Authorization` header is present it always wins; `X-Auth-Token` is used
 only without it. Both are redacted from access logs. There is no OAuth.
 
+Clients that support MCP Skills can load the optional [publishing skill](docs/MCP.md#publishing-skill)
+for help choosing a publish tool, retrying safely, and reporting when the link
+expires. The publishing tools work on their own.
+
 ### Claude (claude.ai, Cowork, Claude Desktop)
 
 1. **Settings → Connectors → Add custom connector** (Team/Enterprise: an owner

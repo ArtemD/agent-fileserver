@@ -12,7 +12,8 @@ the shared, in-process publisher; the release core is never routed publicly.
   describes itself in `server/discover`) and the earlier revisions back to
   2024-11-05 through `initialize`. No version creates a protocol session
   (`Mcp-Session-Id`). Capabilities: `tools`, `resources` and the MCP Apps
-  extension `io.modelcontextprotocol/ui`.
+  extension `io.modelcontextprotocol/ui`. MCP 2026-07-28 discovery also
+  advertises the optional [publishing skill](#publishing-skill).
 - Key header (one of):
   - `Authorization: Bearer YOUR_AGENT_KEY`
   - `X-Auth-Token: YOUR_AGENT_KEY` — for hosts that reserve `Authorization` for
@@ -37,8 +38,22 @@ no Origin); no CORS is installed there. The one exception to "no CORS" is
 `PUT /_upload`, which a ticket alone authorizes (see
 [Large uploads](#large-uploads)).
 
-The server declares the `tools` and `resources` capabilities. The resources are
-the panel pages described under [Panels (MCP Apps)](#panels-mcp-apps).
+The server declares the `tools` and `resources` capabilities. Resources include
+the [panels](#panels-mcp-apps) and the publishing skill's Markdown.
+
+## Publishing skill
+
+`publish-release` guides an agent through choosing a publish tool, recovering
+an interrupted publish, and sharing the resulting link with its access and
+expiry. Hosts supporting the Skills extension can load it on demand. Clients
+can also publish directly with the same tools and follow their descriptions,
+results, and retry hints.
+
+`server/discover` advertises `io.modelcontextprotocol/skills` for MCP
+2026-07-28 clients. The authenticated `skills/list` and `skills/get` methods
+return the same one-file manifest, including its SHA-256 and byte count.
+`resources/read` serves `skill://publish-release/SKILL.md` as `text/markdown`.
+The client's rules govern loading and approval.
 
 ## Publishing
 

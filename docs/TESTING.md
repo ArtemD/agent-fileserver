@@ -205,6 +205,12 @@ Knobs: `FSERVER_TEST_BASE` (default `http://localhost:8000`) and
 edge when local DNS resolves an internal shortcut. TLS verification stays on;
 never use `-k`.
 
+The publishing skill tests also run in Go and in `tests/mcp_live.py`
+through Caddy. They cover discovery, manifest and Markdown agreement, the
+legacy handshake, authenticated access, and a publish retried with identical
+inputs by a client declaring neither Skills nor Apps. That retry must
+return one release and retain its expiry.
+
 ## Panel browser tests (no running stack needed)
 
 The three MCP Apps panels are tested in a real browser against a mock MCP Apps

@@ -36,11 +36,15 @@ func uiListResources(t *testing.T, f apiFixture) map[string]uiResourceEntry {
 		t.Fatalf("resources/list: %d %.1000s (%v)", w.Code, w.Body, err)
 	}
 	out := map[string]uiResourceEntry{}
+	seen := map[string]bool{}
 	for _, r := range list.Result.Resources {
-		out[r.URI] = r
-	}
-	if len(out) != len(list.Result.Resources) {
-		t.Fatalf("duplicate resource URIs: %+v", list.Result.Resources)
+		if seen[r.URI] {
+			t.Fatalf("duplicate resource URI: %s", r.URI)
+		}
+		seen[r.URI] = true
+		if strings.HasPrefix(r.URI, "ui://") {
+			out[r.URI] = r
+		}
 	}
 	return out
 }

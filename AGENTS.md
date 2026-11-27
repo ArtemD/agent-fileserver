@@ -51,7 +51,7 @@ themselves. Details: docs/TESTING.md.
 | `CLAUDE.md` | Imports this file so Claude Code loads the same rules |
 | `CHANGELOG.md` | Keep a Changelog record per version; release notes are taken from it |
 | `compose.yaml`, `compose.direct.yaml`, `.env.example` | The deployment: services, hardening, volumes, config |
-| `Dockerfile` | Go service image (UID 10001), also copies `ui/` for the embed; Caddy uses the official image |
+| `Dockerfile` | Go service image (UID 10001), embeds `ui/` and `skills/`; Caddy uses the official image |
 | `deploy/caddy/` | `Caddyfile.proxy`, `Caddyfile.direct`, shared `routes.caddy` |
 | `scripts/exe-dev-up.sh` | One-shot setup on an exe.dev VM |
 | `scripts/check_consistency.py` | CI guard for drift, hardening, forbidden files and doc links |
@@ -65,6 +65,7 @@ themselves. Details: docs/TESTING.md.
 | `publish.go`, `archive*.go`, `security.go` | Publisher (new release and in-place update), archive extraction, keys, policies |
 | `confirm.go` | Human confirmation of deletes, password removal and updates in place (MCP 2026-07-28 elicitation, signed `requestState`) |
 | `errors.go` | Error responses: stable error strings plus a next-step `hint` for every one |
+| `skills.go`, `skills/publish-release/SKILL.md` | Optional publishing workflow served as a static Markdown resource over MCP Skills |
 | `ui.go` | MCP Apps: embeds `ui/`, links tools to panels with `_meta.ui`, registers the `ui://agent-fileserver/*` resources |
 | `ui/` | Panel sources: `release.html`, `releases.html`, `upload.html`, shared `bridge.js` (MCP Apps client) and `base.css`; inlined at start |
 | `authorization_revision_test.go`, `download_snapshot_test.go` | Real-Caddy authorization race and bounded download snapshot regressions; set `FSERVER_TEST_CADDY_BIN` as in docs/TESTING.md |

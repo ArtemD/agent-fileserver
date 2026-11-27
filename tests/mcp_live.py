@@ -1119,8 +1119,10 @@ class MCPLive(unittest.TestCase):
 
     def test_32_ui_resources_list_and_read(self):
         listed = self.rpc("resources/list").get("resources")
-        check(isinstance(listed, list) and {r.get("uri") for r in listed} == set(self.UI_URIS)
-              and len(listed) == len(self.UI_URIS), "resources/list is not exactly the three ui:// panels")
+        check(isinstance(listed, list), "missing resources/list entries")
+        listed = [r for r in listed if str(r.get("uri", "")).startswith("ui://")]
+        check({r.get("uri") for r in listed} == set(self.UI_URIS)
+              and len(listed) == len(self.UI_URIS), "resources/list did not include the three ui:// panels")
         bases = set()
         for entry in listed:
             uri = entry["uri"]
@@ -1285,14 +1287,16 @@ class MCPLive(unittest.TestCase):
         self.tool("delete_release", {"token": token})
         self.releases.discard(token)
 
-    def rpc_20260728(self, method, params, *, name=None, with_meta=True, elicit=False):
+    def rpc_20260728(self, method, params, *, name=None, with_meta=True, elicit=False, apps=True):
         """One sessionless MCP 2026-07-28 request through Caddy: no initialize,
         version and capabilities in _meta, Mcp-Method/Mcp-Name headers. With
         elicit the client declares that it can show the user a form."""
         params = dict(params)
         if with_meta:
-            capabilities = {"extensions": {
-                "io.modelcontextprotocol/ui": {"mimeTypes": ["text/html;profile=mcp-app"]}}}
+            capabilities = {}
+            if apps:
+                capabilities["extensions"] = {
+                    "io.modelcontextprotocol/ui": {"mimeTypes": ["text/html;profile=mcp-app"]}}
             if elicit:
                 capabilities["elicitation"] = {"form": {}}
             params["_meta"] = {
@@ -1344,6 +1348,65 @@ class MCPLive(unittest.TestCase):
                                                 if method == "tools/call" else None, with_meta=False)
             check(status == 400 and "error" in refused and "result" not in refused,
                   "2026-07-28 request without its _meta version was not refused: " + method)
+
+    def test_40_publish_skill_and_clients_without_it(self):
+        uri = "skill://publish-release/SKILL.md"
+        extension = "io.modelcontextprotocol/skills"
+        for method, params, name in (
+                ("server/discover", {}, None),
+                ("skills/list", {}, None),
+                ("skills/get", {"uri": uri}, None),
+                ("resources/read", {"uri": uri}, uri)):
+            status, reply = self.rpc_20260728(method, params, name=name, apps=False)
+            result = reply.get("result") or {}
+            check(status == 200 and result.get("resultType") == "complete", "skill lookup failed: " + method)
+            if method == "server/discover":
+                check(result.get("capabilities", {}).get("extensions", {}).get(extension) == {},
+                      "server/discover did not advertise Skills")
+            elif method == "skills/list":
+                check(len(result.get("skills", [])) == 1 and "nextCursor" not in result,
+                      "skills/list did not return exactly one complete entry")
+                entry = result["skills"][0]
+            elif method == "skills/get":
+                check(result.get("skill") == entry and entry.get("uri") == uri
+                      and entry.get("frontmatter", {}).get("name") == "publish-release",
+                      "skills/get returned a different entry")
+            else:
+                contents = result.get("contents", [])
+                check(len(contents) == 1 and contents[0].get("uri") == uri
+                      and contents[0].get("mimeType") == "text/markdown", "skill did not return Markdown")
+                content = contents[0].get("text", "").encode()
+                check(entry.get("resources") == [
+                    {"uri": uri, "digest": "sha256:" + sha256(content).hex(), "size": len(content)}],
+                      "skill manifest does not match the served Markdown")
+
+        # A different client can publish and retry with just the core protocol.
+        # Use a fresh key in this fixture account to avoid the suite's publish cap.
+        cls = type(self)
+        old_key = cls.key
+        cls.key = self.create_key(self.tag + "-skills-fallback")
+        self.addCleanup(setattr, cls, "key", old_key)
+        before = self.tool("list_releases", {})["count"]
+        args = self.site_args(expires_in_days=1)
+        releases = []
+        for _ in range(2):
+            status, reply = self.rpc_20260728("tools/call", {"name": "publish_files", "arguments": args},
+                                             name="publish_files", apps=False)
+            result = reply.get("result") or {}
+            check(status == 200 and not result.get("isError") and result.get("resultType") == "complete",
+                  "publish without Skills or Apps support failed")
+            release = json.loads(result["content"][0]["text"])
+            check(TOKEN.fullmatch(release.get("token", "")) is not None and release.get("url")
+                  and release.get("protected") is False,
+                  "publish without Skills or Apps support lost its URL or access status")
+            self.releases.add(release["token"])
+            self.check_expiry(release, 1, "publish without Skills or Apps support")
+            self.check_notice(release, "publish without Skills or Apps support")
+            releases.append((release["token"], release["url"], release["expires_at"]))
+        check(releases[0] == releases[1], "retry returned a different release, URL or expiry")
+        self.public_bytes(releases[0][0], "index.html", HTML)
+        check(self.tool("list_releases", {})["count"] == before + 1,
+              "publishing twice with the same key created a duplicate release")
 
     def confirm_call(self, tool, arguments, answer=None, state=None):
         params = {"name": tool, "arguments": arguments}

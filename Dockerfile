@@ -8,6 +8,8 @@ RUN go mod download && go mod verify
 COPY *.go ./
 # MCP Apps panels, embedded into the binary (ui.go).
 COPY ui/ ./ui/
+# Publishing skill, embedded into the binary (skills.go).
+COPY skills/ ./skills/
 ARG VERSION=dev
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.buildVersion=${VERSION}" \
       -o /out/agent-fileserver .

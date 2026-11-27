@@ -15,7 +15,7 @@ import (
 // Every error string a handler or tool can return has a next-step hint, so an
 // agent never gets a bare "something failed".
 func TestEveryErrorHasHint(t *testing.T) {
-	call := regexp.MustCompile(`(?:apiError|apiErrorDetail|visitorError)\(w, \d+, id, "([^"]+)"|mcpFailure(?:Detail)?\("([^"]+)"`)
+	call := regexp.MustCompile(`(?:apiError|apiErrorDetail|visitorError)\(w, \d+, id, "([^"]+)"|mcpFailure(?:Detail)?\("([^"]+)"|skillError\(jsonrpc\.Code\w+, "([^"]+)"`)
 	files, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatal(err)
@@ -30,7 +30,7 @@ func TestEveryErrorHasHint(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, m := range call.FindAllStringSubmatch(string(b), -1) {
-			msg := m[1] + m[2]
+			msg := m[1] + m[2] + m[3]
 			found++
 			if strings.TrimSpace(errorHints[msg]) == "" {
 				t.Errorf("%s: error %q has no hint in errorHints", f.Name(), msg)

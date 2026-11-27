@@ -10,6 +10,15 @@ Each release on GitHub also lists every commit and the issues it closed.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-27
+
+### Added
+
+- Clients with MCP Skills can load the optional `publish-release` skill to
+  choose an upload method, recover an interrupted publish, and report the
+  link's access and expiry. Clients can also publish directly with the
+  existing tools ([#51](https://github.com/ArtemD/agent-fileserver/issues/51)).
+
 ## [0.7.1] - 2026-11-27
 
 ### Fixed
@@ -273,7 +282,8 @@ Each release on GitHub also lists every commit and the issues it closed.
   passwords, per-agent keys administered from the host, and hardened
   containers.
 
-[Unreleased]: https://github.com/ArtemD/agent-fileserver/compare/v0.7.1...HEAD
+[Unreleased]: https://github.com/ArtemD/agent-fileserver/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/ArtemD/agent-fileserver/compare/v0.7.1...v0.8.0
 [0.7.1]: https://github.com/ArtemD/agent-fileserver/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/ArtemD/agent-fileserver/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/ArtemD/agent-fileserver/compare/v0.6.0...v0.6.1

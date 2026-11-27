@@ -37,6 +37,11 @@ never tool arguments, query parameters, browser cookies or visitor passwords.
 No OAuth account database is needed for this Bearer-key model: accounts are a
 name on each key record, set by the owner with the `admin` service.
 
+The publishing skill is fixed Markdown embedded in the binary. Its manifest
+describes the exact bytes the server returns. Its authenticated MCP methods
+only read that built-in content. Publishing still uses the release tools and
+their existing account, access and confirmation checks.
+
 ## Processes and storage
 
 - Caddy (official `caddy` image) serves static bytes and terminates HTTPS, or

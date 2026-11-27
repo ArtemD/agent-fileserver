@@ -88,6 +88,13 @@ Inside the VM the hostname may resolve to an internal address; test the public
 edge with `curl --resolve files.exe.xyz:443:PUBLIC_IP`. The README's **Deploy on
 exe.dev** button does the same through exe.dev's agent, guided by AGENTS.md.
 
+## Publishing skill
+
+The image includes the optional `publish-release` skill. Connect a client
+as usual and use its skill controls if it supports MCP Skills. The same
+connector credentials and publishing tools work on clients without Skills.
+See the [publishing skill](MCP.md#publishing-skill).
+
 ## Agent keys
 
 ```sh
